@@ -2,7 +2,7 @@ using Documenter
 
 makedocs(
     sitename = "MagnetoPhotonic.jl",
-    authors = "MIPA UNPAD Lab",
+    authors = "Muhammad Arief Mulyana",
     # No git remote configured yet; once the repo is pushed, set e.g.
     #   repo = "github.com/<USER>/MagnetoPhotonic.jl"
     # and remove `remotes = nothing` to enable "edit on GitHub" source links.

@@ -62,4 +62,4 @@ steps=14390   peak |Ez| @ probe = 1.942   energy final/peak = 3.58e-22
 
 ## License
 
-[MIT](https://opensource.org/licenses/MIT) © 2026 MIPA UNPAD Lab.
+[MIT](https://opensource.org/licenses/MIT) © 2026 Muhammad Arief Mulyana.

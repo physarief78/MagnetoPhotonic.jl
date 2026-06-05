@@ -43,6 +43,8 @@ run!(sim; until=80e-15, monitors=[frames])
 grid = (100, 75)   dt = 9.43 as   frames captured = 339   final energy = 9.15e-32
 ```
 
+![2-D TM plane wave — |Ez| with CPML borders](assets/field2d.svg)
+
 - `mode=:TM` evolves `(Ez, Hx, Hy)`; `mode=:TE` evolves `(Hz, Ex, Ey)`.
 - A `FieldMonitor` stores field slices every `every` steps, e.g. for an animation. With the
   optional `CairoMakie` extension, `render_field_video(frames.frames, "out.mp4")` writes a video.
@@ -84,6 +86,8 @@ write_device_obj("device.obj", dev.scene)
 write_plan_svg("device.svg", dev.scene)
 ```
 
+![NOT-gate waveguide device — 2-D plan view](assets/device.svg)
+
 !!! tip "Dispersive materials"
     A `Material(...; poles=…)` adds an ADE pole response on top of the static background
     `epsr`. When the fitted poles already represent the full dielectric response relative to
@@ -118,6 +122,8 @@ dx (nm) = [40, 20, 10]
 L2 err  = [0.0141, 0.00353, 0.000883]
 orders  = (2.00, 2.00)
 ```
+
+![Grid convergence — measured L2 vs. O(Δx²) reference](assets/convergence.svg)
 
 ### Dispersion
 

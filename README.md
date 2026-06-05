@@ -89,6 +89,8 @@ run!(sim; until=80e-15, monitors=[frames])
 grid = (100, 75)   dt = 9.43 as   frames captured = 339   final energy = 9.15e-32
 ```
 
+![2-D TM plane wave — |Ez| with CPML borders](docs/src/assets/field2d.svg)
+
 Use `mode=:TM` for `(Ez, Hx, Hy)` or `mode=:TE` for `(Hz, Ex, Ey)`.
 
 ### 3-D — point source, CPML absorption
@@ -123,6 +125,8 @@ Shape primitives: `Box`, `PolygonShape`, `Waveguide`, `TaperedWaveguide`, `Cylin
 `Letter`. A small device library is included (`not_gate_60um`, `passive_waveguide`,
 `hm_test_pattern`), with OBJ/SVG export via `write_device_obj` / `write_plan_svg`.
 
+![NOT-gate waveguide device — 2-D plan view](docs/src/assets/device.svg)
+
 ## Monitors
 
 | Monitor | Records |
@@ -144,6 +148,8 @@ dx (nm) = [40, 20, 10]
 L2 err  = [0.0141, 0.00353, 0.000883]
 orders  = (2.00, 2.00)
 ```
+
+![Grid convergence — measured L2 vs. O(Δx²) reference](docs/src/assets/convergence.svg)
 
 **Dispersion.** A Drude–Lorentz slab driven at 800 nm reproduces the correct transmitted
 spectral peak:
@@ -192,6 +198,8 @@ mean m_RE_x (Gd)   : -0.998  ->   0.968     # Gd reversed
 switched fraction  = 1.0                    # complete, deterministic switch
 ```
 
+![All-optical switching — FeCo and Gd sublattice reversal](docs/src/assets/switching.svg)
+
 A fully-coupled FDTD path (Yee + CPML + ADE + magneto-optic gyration + 4TM + LLB) is also
 available directly through `FDTDState` / `step!` / `relax_step!` for custom geometries.
 
@@ -236,4 +244,4 @@ Pages: *Getting Started*, *EM-FDTD Tutorial*, *Magneto-Optic Switching*, *API Re
 
 ## License
 
-[MIT](LICENSE) © 2026 MIPA UNPAD Lab.
+[MIT](LICENSE) © 2026 Muhammad Arief Mulyana.

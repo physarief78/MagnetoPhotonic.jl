@@ -52,6 +52,8 @@ mean m_RE_x (Gd)   : -0.998  ->   0.968     # Gd reversed
 switched fraction  = 1.0                    # complete, deterministic switch
 ```
 
+![All-optical switching — FeCo and Gd sublattice reversal](assets/switching.svg)
+
 The returned named tuple includes the initial/final magnetization (`m_TM_x0`, `m_TM_x`,
 `m_RE_x0`, `m_RE_x`), the final temperatures (`Te`), the pump-phase energies, and the
 `switched_fraction`.

@@ -1,6 +1,6 @@
 name = "MagnetoPhotonic"
 uuid = "2f962f6e-6fd8-4fd2-a1e1-6c5d1a65d8a2"
-authors = ["MIPA UNPAD Lab"]
+authors = ["Muhammad Arief Mulyana"]
 version = "0.1.0"
 
 [deps]
