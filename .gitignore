@@ -1,0 +1,19 @@
+# Julia
+/Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/docs/build/
+/docs/Manifest.toml
+deps/deps.jl
+
+# Generated example / study outputs (regenerable)
+/examples/outputs/
+*.mp4
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
