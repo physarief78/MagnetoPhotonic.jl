@@ -1,16 +1,16 @@
+# Reference convention (_probe_jones_angles_deg): rotation measured from the Ez
+# axis (the probe's launch polarization), θ = ½·atan(2·Re(Ey·Ez*), |Ez|²−|Ey|²),
+# ellipticity χ = ½·asin(2·Im(Ey·Ez*)/(|Ey|²+|Ez|²)). The previous package form
+# measured from Ey (θ' = 90°−θ) with flipped handedness.
 function probe_jones_angles_deg(Ey::Complex, Ez::Complex)
-    Sy = abs2(Ey)
-    Sz = abs2(Ez)
-    denom = Sy + Sz
-    if denom == 0.0
+    den = abs2(Ey) + abs2(Ez)
+    if !isfinite(den) || den <= 0.0
         return (rotation_deg=NaN, ellipticity_deg=NaN)
     end
-    s1 = (Sy - Sz) / denom
-    s2 = 2.0 * real(Ey * conj(Ez)) / denom
-    s3 = -2.0 * imag(Ey * conj(Ez)) / denom
-    rotation = 0.5 * atan(s2, s1)
-    ellipticity = 0.5 * asin(clamp(s3, -1.0, 1.0))
-    return (rotation_deg=rotation * 180.0 / pi, ellipticity_deg=ellipticity * 180.0 / pi)
+    theta = 0.5 * atan(2.0 * real(Ey * conj(Ez)), abs2(Ez) - abs2(Ey))
+    s3 = clamp(2.0 * imag(Ey * conj(Ez)) / den, -1.0, 1.0)
+    chi = 0.5 * asin(s3)
+    return (rotation_deg=theta * 180.0 / pi, ellipticity_deg=chi * 180.0 / pi)
 end
 
 function energy_balance(; incident::Real, reflected::Real, transmitted::Real)

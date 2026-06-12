@@ -118,7 +118,18 @@ function update_E_2d!(fields::Fields2D, grid::Grid2D, p::FDTDParams, dt::Real, i
     return fields
 end
 
-function update_H!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real; cpml=nothing)
+function update_H!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real;
+                   cpml=nothing, backend::AbstractBackend=CPUBackend(),
+                   compute_T::Type=default_compute_type(backend),
+                   inv_d_cell_x=grid.x.inv_d_cell,
+                   inv_d_cell_y=grid.y.inv_d_cell,
+                   inv_d_cell_z=grid.z.inv_d_cell)
+    if cpml !== nothing
+        return _ka_update_H_3d!(backend, fields, grid, p, dt, cpml, compute_T;
+                                inv_d_cell_x=inv_d_cell_x,
+                                inv_d_cell_y=inv_d_cell_y,
+                                inv_d_cell_z=inv_d_cell_z)
+    end
     Nx, Ny, Nz = size(fields.Ex)
     dt_mu0 = Float64(dt) / p.mu0
     icx, icy, icz = grid.x.inv_d_cell, grid.y.inv_d_cell, grid.z.inv_d_cell
@@ -130,30 +141,25 @@ function update_H!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real; cp
         dEy_dx = (Float64(fields.Ey[i + 1, j, k]) - Float64(fields.Ey[i, j, k])) * icx[i]
         dEx_dy = (Float64(fields.Ex[i, j + 1, k]) - Float64(fields.Ex[i, j, k])) * icy[j]
 
-        if cpml === nothing
-            fields.Hx[i, j, k] -= dt_mu0 * (dEz_dy - dEy_dz)
-            fields.Hy[i, j, k] -= dt_mu0 * (dEx_dz - dEz_dx)
-            fields.Hz[i, j, k] -= dt_mu0 * (dEy_dx - dEx_dy)
-        else
-            cx, cy, cz = cpml.x, cpml.y, cpml.z
-
-            pHxy = muladd(cy.b[j], cpml.psi_Hxy[i, j, k], cy.a[j] * dEz_dy); cpml.psi_Hxy[i, j, k] = pHxy
-            pHxz = muladd(cz.b[k], cpml.psi_Hxz[i, j, k], cz.a[k] * dEy_dz); cpml.psi_Hxz[i, j, k] = pHxz
-            fields.Hx[i, j, k] -= dt_mu0 * ((dEz_dy * cy.inv_kappa[j] + pHxy) - (dEy_dz * cz.inv_kappa[k] + pHxz))
-
-            pHyz = muladd(cz.b[k], cpml.psi_Hyz[i, j, k], cz.a[k] * dEx_dz); cpml.psi_Hyz[i, j, k] = pHyz
-            pHyx = muladd(cx.b[i], cpml.psi_Hyx[i, j, k], cx.a[i] * dEz_dx); cpml.psi_Hyx[i, j, k] = pHyx
-            fields.Hy[i, j, k] -= dt_mu0 * ((dEx_dz * cz.inv_kappa[k] + pHyz) - (dEz_dx * cx.inv_kappa[i] + pHyx))
-
-            pHzx = muladd(cx.b[i], cpml.psi_Hzx[i, j, k], cx.a[i] * dEy_dx); cpml.psi_Hzx[i, j, k] = pHzx
-            pHzy = muladd(cy.b[j], cpml.psi_Hzy[i, j, k], cy.a[j] * dEx_dy); cpml.psi_Hzy[i, j, k] = pHzy
-            fields.Hz[i, j, k] -= dt_mu0 * ((dEy_dx * cx.inv_kappa[i] + pHzx) - (dEx_dy * cy.inv_kappa[j] + pHzy))
-        end
+        fields.Hx[i, j, k] -= dt_mu0 * (dEz_dy - dEy_dz)
+        fields.Hy[i, j, k] -= dt_mu0 * (dEx_dz - dEz_dx)
+        fields.Hz[i, j, k] -= dt_mu0 * (dEy_dx - dEx_dy)
     end
     return fields
 end
 
-function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, inv_eps_x, inv_eps_y, inv_eps_z; cpml=nothing)
+function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, inv_eps_x, inv_eps_y, inv_eps_z;
+                   cpml=nothing, backend::AbstractBackend=CPUBackend(),
+                   compute_T::Type=default_compute_type(backend),
+                   inv_d_dual_x=grid.x.inv_d_dual,
+                   inv_d_dual_y=grid.y.inv_d_dual,
+                   inv_d_dual_z=grid.z.inv_d_dual)
+    if cpml !== nothing
+        return _ka_update_E_3d!(backend, fields, grid, p, dt, inv_eps_x, inv_eps_y, inv_eps_z,
+                                cpml, compute_T; inv_d_dual_x=inv_d_dual_x,
+                                inv_d_dual_y=inv_d_dual_y,
+                                inv_d_dual_z=inv_d_dual_z)
+    end
     Nx, Ny, Nz = size(fields.Ex)
     dtv = Float64(dt)
     inv_eps0 = 1.0 / p.eps0
@@ -166,25 +172,9 @@ function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, in
         dHy_dx = (Float64(fields.Hy[i, j, k]) - Float64(fields.Hy[i - 1, j, k])) * idx[i]
         dHx_dy = (Float64(fields.Hx[i, j, k]) - Float64(fields.Hx[i, j - 1, k])) * idy[j]
 
-        if cpml === nothing
-            cx_term = dHz_dy - dHy_dz
-            cy_term = dHx_dz - dHz_dx
-            cz_term = dHy_dx - dHx_dy
-        else
-            cx, cy, cz = cpml.x, cpml.y, cpml.z
-
-            pDxy = muladd(cy.b[j], cpml.psi_Dxy[i, j, k], cy.a[j] * dHz_dy); cpml.psi_Dxy[i, j, k] = pDxy
-            pDxz = muladd(cz.b[k], cpml.psi_Dxz[i, j, k], cz.a[k] * dHy_dz); cpml.psi_Dxz[i, j, k] = pDxz
-            cx_term = (dHz_dy * cy.inv_kappa[j] + pDxy) - (dHy_dz * cz.inv_kappa[k] + pDxz)
-
-            pDyz = muladd(cz.b[k], cpml.psi_Dyz[i, j, k], cz.a[k] * dHx_dz); cpml.psi_Dyz[i, j, k] = pDyz
-            pDyx = muladd(cx.b[i], cpml.psi_Dyx[i, j, k], cx.a[i] * dHz_dx); cpml.psi_Dyx[i, j, k] = pDyx
-            cy_term = (dHx_dz * cz.inv_kappa[k] + pDyz) - (dHz_dx * cx.inv_kappa[i] + pDyx)
-
-            pDzx = muladd(cx.b[i], cpml.psi_Dzx[i, j, k], cx.a[i] * dHy_dx); cpml.psi_Dzx[i, j, k] = pDzx
-            pDzy = muladd(cy.b[j], cpml.psi_Dzy[i, j, k], cy.a[j] * dHx_dy); cpml.psi_Dzy[i, j, k] = pDzy
-            cz_term = (dHy_dx * cx.inv_kappa[i] + pDzx) - (dHx_dy * cy.inv_kappa[j] + pDzy)
-        end
+        cx_term = dHz_dy - dHy_dz
+        cy_term = dHx_dz - dHz_dx
+        cz_term = dHy_dx - dHx_dy
 
         fields.Dx[i, j, k] += dtv * cx_term
         fields.Ex[i, j, k] = fields.Dx[i, j, k] * Float64(inv_eps_x[i, j, k]) * inv_eps0

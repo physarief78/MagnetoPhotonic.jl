@@ -7,7 +7,7 @@ magnetization + Kerr/Faraday gyrotropy) for simulating **all-optical magnetizati
 in integrated photonic devices.
 
 ![Julia](https://img.shields.io/badge/julia-%E2%89%A51.12-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen.svg)
 
 > `MagnetoPhotonic` is an umbrella package for magneto-photonic solvers. It ships an
@@ -72,24 +72,24 @@ steps=14390   peak |Ez| @ probe = 1.942   energy final/peak = 3.58e-22
 The pulse propagates at `c`, passes the probe, and is absorbed by the CPML — the residual
 domain energy drops to ~`1e-22` of its peak.
 
-### 2-D — TM plane wave with CPML
+### 2-D — point source and single-slit diffraction
 
-A `PlaneSource` is a transverse current sheet (a line in 2-D), launching a plane wave:
+A `GaussianPulse` (a sine wave under a Gaussian envelope) driving one central cell radiates
+cylindrical wavefronts; a plane wave hitting an opaque (PEC) wall with a sub-wavelength slit
+diffracts into Huygens semicircles. Both are runnable: `examples/point_source_2d.jl` and
+`examples/slit_diffraction_2d.jl`.
 
 ```julia
-pw = GaussianPulse(; amplitude=1.0, tau=10e-15, t0=40e-15, omega=2pi*p.c0/800e-9)
-sim = Simulation(; cell=(2e-6, 1.5e-6), dx=20e-9, dimension=2, mode=:TM,
-                 sources=[PlaneSource(pw, :Ez; axis=:x, position=0.3e-6)],
-                 boundary=PML(10), courant=0.4)
-frames = FieldMonitor(:Ez; every=25)
-run!(sim; until=80e-15, monitors=[frames])
+# point source in the middle of the domain
+pw  = GaussianPulse(; amplitude=1.0, tau=20e-15, t0=30e-15, omega=2pi*p.c0/700e-9)
+sim = Simulation(; cell=((0.0,4e-6),(0.0,4e-6)), dx=20e-9, dimension=2, mode=:TM,
+                 sources=[PointSource(pw, :Ez, (2e-6, 2e-6))], boundary=PML(10), courant=0.45)
+run!(sim, 1300)
 ```
 
-```text
-grid = (100, 75)   dt = 9.43 as   frames captured = 339   final energy = 9.15e-32
-```
+![Point source — sine×Gaussian wavepacket radiating from center](docs/src/assets/pointsource.svg)
 
-![2-D TM plane wave — |Ez| with CPML borders](docs/src/assets/field2d.svg)
+![Single-slit diffraction — plane wave through a PEC wall](docs/src/assets/slit.svg)
 
 Use `mode=:TM` for `(Ez, Hx, Hy)` or `mode=:TE` for `(Hz, Ex, Ey)`.
 
@@ -198,7 +198,13 @@ mean m_RE_x (Gd)   : -0.998  ->   0.968     # Gd reversed
 switched fraction  = 1.0                    # complete, deterministic switch
 ```
 
-![All-optical switching — FeCo and Gd sublattice reversal](docs/src/assets/switching.svg)
+The figure below comes from the 0-D driver `examples/aos_switching_0d.jl`, which heats a
+single GdFeCo cell through the 4TM. Because the FeCo (TM) and Gd (RE) spin baths demagnetize
+on different timescales (≈100 fs vs ≈430 fs), **FeCo reverses first (~0.9 ps) and Gd follows
+(~1.5 ps)** — opening the shaded transient-ferromagnetic window. The lower panel is the
+four-temperature reservoir evolution (electron `T_e` peaking ≈2400 K).
+
+![All-optical switching — asymmetric FeCo-first / Gd-delayed reversal + 4TM reservoirs](docs/src/assets/switching.svg)
 
 A fully-coupled FDTD path (Yee + CPML + ADE + magneto-optic gyration + 4TM + LLB) is also
 available directly through `FDTDState` / `step!` / `relax_step!` for custom geometries.
@@ -244,4 +250,5 @@ Pages: *Getting Started*, *EM-FDTD Tutorial*, *Magneto-Optic Switching*, *API Re
 
 ## License
 
-[MIT](LICENSE) © 2026 Muhammad Arief Mulyana.
+Licensed under the [GNU General Public License v3.0 only](LICENSE)
+(`GPL-3.0-only`). Copyright © 2026 Muhammad Arief Mulyana.

@@ -25,6 +25,21 @@ GdFeCo set, and any parameter can be overridden:
 model = MagnetoOpticModel(; T_Curie=560.0, Q_voigt_TM=0.025, alpha0_TM=0.04)
 ```
 
+The parameter container is `FerrimagnetParameters`, a general two-sublattice ferrimagnet
+model using the conventional TM/RE labels. The calibrated GdFeCo set is available as a
+preset, and the legacy `GdFeCoParameters` name remains an alias:
+
+```julia
+gd = gdfeco_parameters()
+custom = ferrimagnet(:gdfeco; Ms_TM=1.0e6, Ms_RE=0.48e6, Q_voigt_TM=0.018)
+model = MagnetoOpticModel(params=custom)
+```
+
+Every constant that was previously baked into the GdFeCo constructor is now a keyword:
+sublattice moments and spins, exchange constants, anisotropy, thermal couplings and
+timescales, Curie/compensation temperatures, Voigt coefficients, and pump/probe optical
+indices. That makes GdFeCo a preset input rather than the package's only magnetic material.
+
 ## Running a pump–relax switching experiment
 
 `run_pump_probe_sim` builds the device, runs the pump FDTD with the coupled multiphysics,
@@ -52,11 +67,34 @@ mean m_RE_x (Gd)   : -0.998  ->   0.968     # Gd reversed
 switched fraction  = 1.0                    # complete, deterministic switch
 ```
 
-![All-optical switching — FeCo and Gd sublattice reversal](assets/switching.svg)
-
 The returned named tuple includes the initial/final magnetization (`m_TM_x0`, `m_TM_x`,
 `m_RE_x0`, `m_RE_x`), the final temperatures (`Te`), the pump-phase energies, and the
 `switched_fraction`.
+
+## The asymmetric sublattice reversal (0-D)
+
+To see the *order* of the reversal cheaply, `examples/aos_switching_0d.jl` drives a single
+GdFeCo cell with the four-temperature model directly (an absorbed-power Gaussian heats the
+electron bath, which feeds the two spin baths). Because the FeCo (TM) and Gd (RE) baths
+demagnetize on **different** timescales (≈100 fs vs ≈430 fs) and the branch-selection channel
+gates the Gd reversal on the FeCo one, **FeCo reverses first and Gd follows** — opening the
+transient-ferromagnetic window that is the fingerprint of GdFeCo all-optical switching:
+
+```text
+FeCo (TM) m_x: +0.992 → -0.990   zero crossing @ 0.92 ps
+Gd   (RE) m_x: -0.972 → +0.968   zero crossing @ 1.47 ps
+electron T_e peak = 2381 K
+```
+
+![All-optical switching — asymmetric FeCo-first / Gd-delayed reversal with the 4TM reservoirs](assets/switching.svg)
+
+The top panel plots the physical magnetization `M_x = M_s·m` of each sublattice (and the
+net), with the transient-ferromagnetic window shaded; the bottom panel is the four-temperature
+reservoir evolution (electron `T_e` peaking ≈2400 K, then the slower lattice and spin baths).
+This 0-D trajectory reproduces the qualitative reversal *sequence* of the lab reference
+`GdFeCo_Magnetization_Switching.png`. Note that the reference figure is a spatial **film
+average** of the full device run, so its switch is *partial* (only the hot core of the beam
+reverses) — whereas a single fully-pumped cell switches completely.
 
 !!! note "`thermal_kick`"
     On a small CPU-scale grid the laser fluence needed for switching is hard to deposit in a

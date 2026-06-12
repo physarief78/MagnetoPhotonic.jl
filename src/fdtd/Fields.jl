@@ -10,11 +10,16 @@ struct FieldState{T,A}
     Dz::A
 end
 
+FieldState(Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz) =
+    FieldState{eltype(Ex),typeof(Ex)}(Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz)
+
 struct Fields1D{T,A}
     Ez::A
     Hy::A
     Dz::A
 end
+
+Fields1D(Ez, Hy, Dz) = Fields1D{eltype(Ez),typeof(Ez)}(Ez, Hy, Dz)
 
 struct Fields2D{T,A}
     mode::Symbol
@@ -28,6 +33,17 @@ struct Fields2D{T,A}
     Dy::A
     Dz::A
 end
+
+Fields2D(mode::Symbol, Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz) =
+    Fields2D{eltype(Ex),typeof(Ex)}(mode, Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz)
+
+Adapt.@adapt_structure FieldState
+Adapt.@adapt_structure Fields1D
+Adapt.@adapt_structure Fields2D
+
+to_host(f::FieldState) = Adapt.adapt(Array, f)
+to_host(f::Fields1D) = Adapt.adapt(Array, f)
+to_host(f::Fields2D) = Adapt.adapt(Array, f)
 
 function allocate_fields(grid::Grid1D; backend::AbstractBackend=CPUBackend(), T::Type=EM_FIELD_STORAGE_TYPE)
     N = length(grid.x.centers)

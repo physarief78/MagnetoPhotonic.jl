@@ -62,4 +62,5 @@ steps=14390   peak |Ez| @ probe = 1.942   energy final/peak = 3.58e-22
 
 ## License
 
-[MIT](https://opensource.org/licenses/MIT) © 2026 Muhammad Arief Mulyana.
+Licensed under the [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html)
+(`GPL-3.0-only`). Copyright © 2026 Muhammad Arief Mulyana.

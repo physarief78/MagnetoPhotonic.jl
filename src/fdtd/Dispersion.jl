@@ -7,6 +7,8 @@ struct DLPole{T<:AbstractFloat}
     C3::T
 end
 
+Base.convert(::Type{DLPole{T}}, p::DLPole) where {T<:AbstractFloat} = DLPole{T}(T(p.C1), T(p.C2), T(p.C3))
+
 function create_pole(omega0::Real, gamma::Real, delta_eps_omega0_sq::Real, dt::Real, eps0::Real)
     alpha = Float64(dt) / 2.0
     D = 1.0 + alpha * Float64(gamma) + (alpha * Float64(omega0))^2
@@ -88,49 +90,24 @@ function build_probe_mo_poles(dt::Real, eps0::Real, gd)
                                  pos=_PROBE_MO_POLE_POSITIONS, require_passive=true)
 end
 
-struct ADEState{T}
-    P::Matrix{T}
-    J::Matrix{T}
-    E_old::Vector{T}
+struct ADEState{T,A2,A1}
+    P::A2
+    J::A2
+    E_old::A1
 end
 
-function allocate_ade_state(N_active::Integer, poles::AbstractVector; T=Float64)
-    return ADEState(zeros(T, N_active, length(poles)), zeros(T, N_active, length(poles)), zeros(T, N_active))
+ADEState(P, J, E_old) = ADEState{eltype(P),typeof(P),typeof(E_old)}(P, J, E_old)
+
+Adapt.@adapt_structure ADEState
+
+function allocate_ade_state(N_active::Integer, poles::AbstractVector; T=Float64, backend::AbstractBackend=CPUBackend())
+    P = zeros_backend(backend, T, N_active, length(poles))
+    J = zeros_backend(backend, T, N_active, length(poles))
+    E_old = zeros_backend(backend, T, N_active)
+    return ADEState{T,typeof(P),typeof(E_old)}(P, J, E_old)
 end
 
-function patch_E_dispersive!(E_arr, state::ADEState, active_idx::AbstractVector{<:Integer}, fill::AbstractVector, inv_eps::AbstractVector, poles::AbstractVector{<:DLPole}, dt::Real)
-    inv_alpha = 2.0 / Float64(dt)
-    @inbounds for n in eachindex(active_idx)
-        idx = active_idx[n]
-        E_old = state.E_old[n]
-        f = Float64(fill[n])
-        ie = Float64(inv_eps[n])
-        sum_psi = 0.0
-        sum_beta = 0.0
-        for p in eachindex(poles)
-            pole = poles[p]
-            beta = pole.C3 * f
-            psi = muladd(pole.C1, state.P[n, p], muladd(pole.C2, state.J[n, p], beta * E_old))
-            sum_psi += psi
-            sum_beta += beta
-        end
-        den = 1.0 + sum_beta * ie
-        E_temp = Float64(E_arr[idx])
-        if isfinite(E_temp) && isfinite(sum_psi) && isfinite(den) && abs(den) >= 1e-30
-            E_final = (E_temp - sum_psi * ie) / den
-            E_arr[idx] = E_final
-            state.E_old[n] = E_final
-            for p in eachindex(poles)
-                pole = poles[p]
-                beta = pole.C3 * f
-                P_old = state.P[n, p]
-                J_old = state.J[n, p]
-                psi = muladd(pole.C1, P_old, muladd(pole.C2, J_old, beta * E_old))
-                P_new = psi + beta * E_final
-                state.P[n, p] = P_new
-                state.J[n, p] = (P_new - P_old) * inv_alpha - J_old
-            end
-        end
-    end
-    return E_arr
+function patch_E_dispersive!(E_arr, state::ADEState, active_idx::AbstractVector{<:Integer}, fill::AbstractVector, inv_eps::AbstractVector, poles::AbstractVector{<:DLPole}, dt::Real;
+                             backend::AbstractBackend=CPUBackend(), compute_T::Type=default_compute_type(backend))
+    return _ka_patch_E_dispersive!(backend, E_arr, state, active_idx, fill, inv_eps, poles, dt, compute_T)
 end

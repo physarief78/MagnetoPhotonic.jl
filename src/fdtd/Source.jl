@@ -15,6 +15,20 @@ Base.@kwdef struct ContinuousSource
     phase::Float64 = 0.0
 end
 
+# Reference-production pulse convention (pump_probe_switching_empirical_params.jl):
+# amplitude · sin(ω·t) · exp(−½((t−t0)/σ)²). Two differences from GaussianPulse:
+# the carrier phase is referenced to t = 0 (not t0), and the envelope uses the
+# σ-convention exp(−½ x²) rather than exp(−x²).
+Base.@kwdef struct CarrierGaussianPulse
+    amplitude::Float64 = 1.0
+    t0::Float64 = 160e-15
+    sigma::Float64 = 40e-15
+    omega::Float64 = 2pi * 299792458.0 / 800e-9
+end
+
+source_value(p::CarrierGaussianPulse, t::Real) =
+    p.amplitude * sin(p.omega * Float64(t)) * exp(-0.5 * ((Float64(t) - p.t0) / p.sigma)^2)
+
 source_value(p::GaussianPulse, t::Real) = gaussian_pulse_value(p, t)
 source_value(s::ContinuousSource, t::Real) = s.amplitude * sin(s.omega * Float64(t) + s.phase)
 
@@ -33,9 +47,27 @@ struct PlaneSource{P} <: AbstractEMSource
     position::Any
 end
 
-PlaneSource(pulse, component::Symbol; axis::Symbol=:x, position=0.0) = PlaneSource{typeof(pulse)}(pulse, component, axis, position)
+struct ModeSource{P,A} <: AbstractEMSource
+    pulse::P
+    profile::A
+    neff::Float64
+    axis::Symbol
+    position::Any
+    component::Symbol
+end
 
-_nearest_index(axis::Axis1D, x::Real) = clamp(searchsortedfirst(axis.centers, Float64(x)), 1, length(axis.centers))
+PlaneSource(pulse, component::Symbol; axis::Symbol=:x, position=0.0) = PlaneSource{typeof(pulse)}(pulse, component, axis, position)
+ModeSource(profile; pulse=ContinuousSource(), neff::Real=1.0, axis::Symbol=:x, position=0.0, component::Symbol=:Ez) =
+    ModeSource{typeof(pulse),typeof(profile)}(pulse, profile, Float64(neff), axis, position, component)
+
+# True nearest-centre index (the reference's argmin(|centers − x|); ties pick the
+# lower index, matching argmin's first-minimum convention).
+function _nearest_index(axis::Axis1D, x::Real)
+    N = length(axis.centers)
+    hi = clamp(searchsortedfirst(axis.centers, Float64(x)), 1, N)
+    lo = max(hi - 1, 1)
+    return abs(axis.centers[lo] - Float64(x)) <= abs(axis.centers[hi] - Float64(x)) ? lo : hi
+end
 _source_index(axis::Axis1D, i::Integer) = clamp(Int(i), 1, length(axis.centers))
 _source_index(axis::Axis1D, x::Real) = _nearest_index(axis, x)
 
@@ -54,7 +86,11 @@ function _axis_weights(axis::Axis1D, x::Real)
 end
 
 function inject_soft!(fields::FieldState, component::Symbol, index::NTuple{3,Int}, value::Real;
-                      eps0::Real=1.0, inv_eps=nothing)
+                      eps0::Real=1.0, inv_eps=nothing, backend::AbstractBackend=CPUBackend(),
+                      compute_T::Type=default_compute_type(backend))
+    if inv_eps !== nothing
+        return _ka_inject_soft_3d!(backend, fields, component, index, value, eps0, inv_eps, compute_T)
+    end
     arr = getfield(fields, component)
     arr[index...] += value
     ie = inv_eps === nothing ? 1.0 : Float64(inv_eps[index...])
@@ -166,6 +202,14 @@ function inject!(fields::FieldState, grid::Grid3D, src::PlaneSource, t::Real, p:
         throw(ArgumentError("3-D PlaneSource axis must be :x, :y or :z"))
     end
     return fields
+end
+
+function inject!(fields::FieldState, grid::Grid3D, src::ModeSource, t::Real, p::FDTDParams, inv_eps;
+                 backend::AbstractBackend=CPUBackend(), compute_T::Type=default_compute_type(backend))
+    inv_arr = src.component == :Ey ? inv_eps.inv_eps_y : src.component == :Ez ? inv_eps.inv_eps_z :
+              throw(ArgumentError("ModeSource electric component must be :Ey or :Ez"))
+    return _ka_inject_mode_x_3d!(backend, fields, src, grid, source_value(src.pulse, t),
+                                 p.eps0, inv_arr, compute_T)
 end
 
 function _inject_3d_cell!(fields::FieldState, component::Symbol, i::Int, j::Int, k::Int, val::Real, p::FDTDParams, inv_eps)

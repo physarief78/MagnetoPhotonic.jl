@@ -47,7 +47,7 @@ function cayley_rotate(m::NTuple{3,<:Real}, H::NTuple{3,<:Real}, gamma::Real, dt
             ((1.0 - q2) * mz + 2.0 * qdotm * qz + 2.0 * cz) / den)
 end
 
-function build_m_eq_lut(gd::GdFeCoParameters; T_min::Float64=1.0, T_max::Float64=1800.0, dT::Float64=1.0)
+function build_m_eq_lut(gd::FerrimagnetParameters; T_min::Float64=1.0, T_max::Float64=1800.0, dT::Float64=1.0)
     nT = floor(Int, (T_max - T_min) / dT) + 1
     tm = zeros(Float64, nT)
     re = zeros(Float64, nT)
@@ -72,7 +72,7 @@ function build_m_eq_lut(gd::GdFeCoParameters; T_min::Float64=1.0, T_max::Float64
     return tm, re, T_min, 1.0 / dT, Int32(nT)
 end
 
-@inline function lookup_m_eq_lut(lut, T, T_min::Float64, inv_dT::Float64, lut_N::Integer)
+@inline function lookup_m_eq_lut(lut, T, T_min::Real, inv_dT::Real, lut_N::Integer)
     pos = (Float64(T) - T_min) * inv_dT
     isfinite(pos) || return 0.0
     pos_c = clamp(pos, 0.0, Float64(lut_N - 1))
@@ -80,7 +80,9 @@ end
     i0 = clamp(Int(base) + 1, 1, Int(lut_N))
     i1 = min(i0 + 1, Int(lut_N))
     frac = clamp(pos_c - base, 0.0, 1.0)
-    return (1.0 - frac) * lut[i0] + frac * lut[i1]
+    # @inbounds: i0,i1 are clamped to [1,lut_N]; the bounds-check throw path is not
+    # GPU-lowerable (it allocates a BoundsError), so elide it explicitly.
+    @inbounds return (1.0 - frac) * lut[i0] + frac * lut[i1]
 end
 
 @inline hot_weight(T, Tsw, inv_dTsw) = 1.0 / (1.0 + exp(-(Float64(T) - Float64(Tsw)) * Float64(inv_dTsw)))
@@ -98,11 +100,13 @@ end
 
 # One LLB step for a single cell. Returns the new magnetization plus the per-step
 # x-change and anisotropy fields needed to couple back into the 4TM spin baths.
-function llb_step(mx_TM, my_TM, mz_TM, mx_RE, my_RE, mz_RE,
+# `@inline` so it fuses into the GPU multiphysics kernel (an out-of-line call to a
+# function this large is a dynamic invocation GPUCompiler cannot lower).
+@inline function llb_step(mx_TM, my_TM, mz_TM, mx_RE, my_RE, mz_RE,
                   te_current, ts_TM_old, ts_RE_old,
-                  gd::GdFeCoParameters, m_eq_TM_lut, m_eq_RE_lut,
-                  lut_T_min::Float64, lut_inv_dT::Float64, lut_N::Integer,
-                  dt::Float64, brillouin_iters::Integer)
+                  gd::FerrimagnetParameters, m_eq_TM_lut, m_eq_RE_lut,
+                  lut_T_min::Real, lut_inv_dT::Real, lut_N::Integer,
+                  dt::Real, brillouin_iters::Integer)
     ts_avg = 0.5 * (ts_TM_old + ts_RE_old)
     ratio_TM = ts_TM_old * gd.inv_T_Curie
     ratio_RE = ts_RE_old * gd.inv_T_Curie
@@ -259,19 +263,22 @@ function llb_step(mx_TM, my_TM, mz_TM, mx_RE, my_RE, mz_RE,
 end
 
 # Per-material-cell magnetization vectors for both sublattices (TM = FeCo, RE = Gd).
-mutable struct MagnetizationState
-    m_TM_x::Vector{Float64}; m_TM_y::Vector{Float64}; m_TM_z::Vector{Float64}
-    m_RE_x::Vector{Float64}; m_RE_y::Vector{Float64}; m_RE_z::Vector{Float64}
+mutable struct MagnetizationState{A}
+    m_TM_x::A; m_TM_y::A; m_TM_z::A
+    m_RE_x::A; m_RE_y::A; m_RE_z::A
 end
 
-function MagnetizationState(N::Integer, model::MagnetoOpticModel; seed_tilt::Real=1e-4)
+Adapt.@adapt_structure MagnetizationState
+
+function MagnetizationState(N::Integer, model::MagnetoOpticModel; seed_tilt::Real=1e-4,
+                            T=Float64, backend::AbstractBackend=CPUBackend())
     gd = model.params
     tm_lut, re_lut, T_min, inv_dT, lut_N = build_m_eq_lut(gd)
-    mtm0 = lookup_m_eq_lut(tm_lut, gd.T0, T_min, inv_dT, lut_N)
-    mre0 = lookup_m_eq_lut(re_lut, gd.T0, T_min, inv_dT, lut_N)
-    st = Float64(seed_tilt)
+    mtm0 = T(lookup_m_eq_lut(tm_lut, gd.T0, T_min, inv_dT, lut_N))
+    mre0 = T(lookup_m_eq_lut(re_lut, gd.T0, T_min, inv_dT, lut_N))
+    st = T(seed_tilt)
     return MagnetizationState(
-        fill(mtm0, N), zeros(N), fill(st, N),
-        fill(mre0, N), zeros(N), fill(st, N),
+        fill_backend(backend, mtm0, N), zeros_backend(backend, T, N), fill_backend(backend, st, N),
+        fill_backend(backend, mre0, N), zeros_backend(backend, T, N), fill_backend(backend, st, N),
     )
 end

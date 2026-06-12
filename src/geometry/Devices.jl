@@ -1,4 +1,12 @@
-function not_gate_60um(; units::Symbol=:um, wg_width=0.40, wg_height=0.40, film_thickness=1.0)
+# `core_epsr` defaults to the legacy 4.0; pass FDTDParams(λ).epsr_si3n4 for the
+# Sellmeier-dispersed value the reference uses. `substrate_epsr` (e.g. ε_SiO2(λ))
+# adds a substrate slab filling z < 0, painted FIRST so the waveguide blends over
+# it. `bare=true` replaces the film segment with continuous core material (the
+# reference's film_disabled bare-waveguide used for gold-standard normalization).
+function not_gate_60um(; units::Symbol=:um, wg_width=0.40, wg_height=0.40,
+                       film_thickness=1.0, model::AbstractPhysicsModel=MagnetoOpticModel(),
+                       core_epsr::Real=4.0, substrate_epsr=nothing,
+                       substrate_depth::Real=2.0, bare::Bool=false)
     scale = units == :m ? 1e-6 : 1.0
     x_in = 0.0
     x_bend = 5.0
@@ -39,18 +47,32 @@ function not_gate_60um(; units::Symbol=:um, wg_width=0.40, wg_height=0.40, film_
         wg_height *= scale
     end
 
-    core = Material("Si3N4"; epsr=4.0, color=:gray)
-    active = Material("GdFeCo"; epsr=1.0, model=:magneto_optic, color=:orange)
-    scene = Scene()
-    add_shape!(scene, Waveguide(path_top, wg_width, 0.0, wg_height), core)
-    add_shape!(scene, Waveguide(path_bot, wg_width, 0.0, wg_height), core)
-    add_shape!(scene, TaperedWaveguide(path_taper, 2.0 * wg_width, wg_width, 0.0, wg_height), core)
-    add_shape!(scene, Waveguide(path_out_pre, wg_width, 0.0, wg_height), core)
-    add_shape!(scene, Waveguide(path_out_film, wg_width, 0.0, wg_height), active)
-    add_shape!(scene, Waveguide(path_out_post, wg_width, 0.0, wg_height), core)
+    dev = waveguide_device(
+        (kind=:waveguide, name=:top, role=:core, path=path_top, width=wg_width),
+        (kind=:waveguide, name=:bottom, role=:core, path=path_bot, width=wg_width),
+        (kind=:tapered, name=:taper, role=:core, path=path_taper,
+         width_start=2.0 * wg_width, width_end=wg_width),
+        (kind=:waveguide, name=:pre, role=:core, path=path_out_pre, width=wg_width),
+        (kind=:waveguide, name=:film, role=bare ? :core : :film, path=path_out_film, width=wg_width),
+        (kind=:waveguide, name=:post, role=:core, path=path_out_post, width=wg_width);
+        core=Material("Si3N4"; epsr=Float64(core_epsr), color=:gray),
+        film_model=model,
+        height=wg_height,
+        width=wg_width,
+    )
+
+    if substrate_epsr !== nothing
+        sub = Box((x_in - 1.0) * scale, (x_out + 1.0) * scale,
+                  -4.0 * scale, 4.0 * scale,
+                  -Float64(substrate_depth) * scale, 0.0)
+        pushfirst!(dev.scene.entries,
+                   SceneEntry(sub, Material("SiO2"; epsr=Float64(substrate_epsr), color=:blue)))
+    end
 
     return (;
-        scene,
+        scene=dev.scene,
+        ports=dev.ports,
+        film_regions=dev.film_regions,
         paths=(top=path_top, bottom=path_bot, taper=path_taper, pre=path_out_pre, film=path_out_film, post=path_out_post),
         polygons=(
             top=generate_waveguide_polygon(path_top, wg_width),
@@ -58,10 +80,12 @@ function not_gate_60um(; units::Symbol=:um, wg_width=0.40, wg_height=0.40, film_
             taper=generate_tapered_polygon(path_taper, 2.0 * wg_width, wg_width),
             film=generate_waveguide_polygon(path_out_film, wg_width),
         ),
-        x_film_start=x_film_start * scale,
-        x_film_end=x_film_end * scale,
-        wg_width,
-        wg_height,
+        # Use the film path extent directly so the bounds stay valid for bare=true
+        # (where the film segment is painted as core and _film_bounds finds none).
+        x_film_start=path_out_film[1].x,
+        x_film_end=path_out_film[end].x,
+        wg_width=dev.wg_width,
+        wg_height=dev.wg_height,
     )
 end
 
