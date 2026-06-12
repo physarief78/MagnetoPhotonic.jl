@@ -78,6 +78,15 @@ end
     dt = cfl_dt(grid, p; courant=0.4)
     c = build_cpml(grid, 5, dt, p)
     mid = cld(length(grid.x.centers), 2)
+    N = length(grid.x.centers)
+    @test MagnetoPhotonic._pml_slab(5, Int32(N), Int32(5)) == (Int32(5), Int32(1))
+    @test MagnetoPhotonic._pml_slab(6, Int32(N), Int32(5)) == (Int32(0), Int32(0))
+    @test MagnetoPhotonic._pml_slab(N - 5 + 1, Int32(N), Int32(5)) == (Int32(1), Int32(2))
+    @test MagnetoPhotonic._pml_slab(N, Int32(N), Int32(5)) == (Int32(5), Int32(2))
+    @test c.Npml_x == 5 && c.Npml_y == 5 && c.Npml_z == 5
+    @test size(c.psi_Hyx_lo) == (5, N, N)
+    @test size(c.psi_Hxy_lo) == (N, 5, N)
+    @test size(c.psi_Hxz_lo) == (N, N, 5)
     @test 0.0 < c.x.b[1] < 1.0          # absorbing at the boundary
     @test c.x.b[mid] == 0.0             # transparent in the bulk
     @test c.x.inv_kappa[mid] == 1.0
@@ -338,4 +347,325 @@ end
     cvd = convergence_study(; dimension=1, dispersive=true, dxs=(60e-9, 40e-9),
                             L=8e-7, T_max=20e-15, nsample=40)
     @test cvd.spectrum !== nothing
+end
+
+@testset "Backend / precision parity" begin
+    # Same small coupled 3-D experiment on different backends/precisions. The unified
+    # KernelAbstractions kernels must give the same physics on every backend.
+    function prun(device, precision)
+        cfg = SimConfig(
+            grid   = GridConfig(xlim=(0.0, 1.6e-6), ylim=(-0.4e-6, 0.4e-6), zlim=(-0.4e-6, 0.4e-6),
+                                dx=0.1e-6, courant=0.3),
+            source = SourceConfig(component=:Ez, amplitude=1e2, tau=15e-15, t0=45e-15),
+            device = DeviceConfig(wg_width=0.3e-6, wg_height=0.3e-6, film_thickness=0.2e-6,
+                                  x_film_start=0.8e-6, x_film_end=1.0e-6),
+            model  = ModelConfig(multiphysics_subcycle=4, absorption_model=:ade_work),
+            pml    = PMLConfig(cells=4), steps=60,
+            backend = BackendConfig(device=device, compute_precision=precision),
+        )
+        res = run_experiment(cfg; phases=[Pump(steps=60)])
+        return Float64.(to_host(res.state.fields.Ez))
+    end
+    reldiff(a, b) = maximum(abs.(a .- b)) / max(maximum(abs, a), eps())
+
+    ref = prun(:cpu, :f64)
+    @test all(isfinite, ref)
+    @test prun(:cpu, :f64) == ref                       # determinism (bit-identical)
+    @test reldiff(ref, prun(:cpu, :f32)) < 1e-2         # Float32 within tolerance
+
+    if has_gpu()                                         # skipped on CPU-only hosts
+        @test reldiff(ref, prun(:cuda, :f64)) < 1e-10   # GPU Float64 == CPU Float64
+        @test reldiff(ref, prun(:cuda, :f32)) < 1e-2    # GPU Float32 within tolerance
+    end
+end
+
+@testset "Ferrimagnet presets and overrides" begin
+    gd = gdfeco_parameters()
+    legacy = GdFeCoParameters()
+    @test gd isa FerrimagnetParameters
+    @test legacy isa FerrimagnetParameters
+    @test isapprox(gd.Ms_TM, legacy.Ms_TM)
+    @test isapprox(gd.Q_voigt_TM, legacy.Q_voigt_TM)
+
+    custom = ferrimagnet(:gdfeco; Ms_TM=9.0e5, Ms_RE=4.8e5, Q_voigt_TM=0.031)
+    @test isapprox(custom.Ms_TM, 9.0e5)
+    @test isapprox(custom.Ms_RE, 4.8e5)
+    @test isapprox(MagnetoOpticModel(params=custom).params.Q_voigt_TM, 0.031)
+end
+
+@testset "Device builder film model and graded grid" begin
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (1.0e-7, 0.0); width=8.0e-8, name=:input),
+        film_region(1.0e-7, 2.0e-7; width=8.0e-8),
+        straight((2.0e-7, 0.0), (3.0e-7, 0.0); width=8.0e-8, name=:output);
+        height=8.0e-8,
+        film_model=model,
+    )
+    @test dev.x_film_start == 1.0e-7
+    @test dev.x_film_end == 2.0e-7
+    @test dev.scene.entries[2].material.model isa MagnetoOpticModel
+
+    grid = uniform_grid((0.0, 3.0e-7), (-1.0e-7, 1.0e-7), (-5.0e-8, 1.0e-7), 5.0e-8)
+    geo = rasterize(dev.scene, grid; subpixel=1)
+    @test geo.n_material > 0
+
+    gcfg = GridConfig(xlim=(0.0, 1.0e-6), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                      mesh=:graded, dx=1.0e-7, dy=1.0e-7, dz=1.0e-7,
+                      fine_dx=1.0e-8, fine_region=(4.5e-7, 5.5e-7), fine_buffer=2.0e-8)
+    g = grid_from_config(gcfg)
+    dxs = diff(g.x.edges)
+    film_cells = findall(x -> 4.5e-7 <= x <= 5.5e-7, g.x.centers)
+    @test !isempty(film_cells)
+    @test minimum(dxs[film_cells]) <= 1.5 * gcfg.fine_dx
+    @test maximum(dxs) > minimum(dxs)
+end
+
+@testset "Scalar waveguide mode solver" begin
+    dy = dz = 50e-9
+    epsr = fill(1.44^2, 9, 9)
+    epsr[4:6, 4:6] .= 2.0^2
+    sol = solve_waveguide_mode(epsr, dy, dz, 800e-9; neff_guess=1.8, max_iter=8)
+    @test 1.44 <= sol.neff <= 2.0
+    @test size(sol.profile) == size(epsr)
+    @test isapprox(sum(abs2, sol.profile) * dy * dz, 1.0; rtol=1e-6)
+end
+
+@testset "Production-style experiment smoke" begin
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8,
+        zmin=-4.0e-8,
+        film_model=model,
+    )
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                        mesh=:graded, dx=1.0e-7, dy=5.0e-8, dz=5.0e-8,
+                        fine_dx=5.0e-8, fine_region=(dev.x_film_start, dev.x_film_end),
+                        fine_buffer=5.0e-8, courant=0.25),
+        source=SourceConfig(kind=:mode, component=:Ez, position=1.0e-7, amplitude=1.0,
+                            tau=8e-15, t0=24e-15, neff_guess=1.8),
+        probe=ProbeConfig(kind=:mode, component=:Ez, position=1.0e-7, amplitude=0.1,
+                          tau=8e-15, t0=24e-15, neff_guess=1.8),
+        pml=PMLConfig(cells=1),
+        model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=2),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64),
+        steps=2,
+    )
+    res = run_experiment(cfg; model=model, scene=dev,
+                         phases=[Pump(steps=2, monitors=[AbsorbedPower()]),
+                                 Probe(lambda0=532e-9, steps=1,
+                                       monitors=[Transmission(at=4.0e-7), Polarimetry(at=4.0e-7)])])
+    @test res.summary.n == 3
+    @test res.summary.n_material > 0
+    @test all(isfinite, to_host(res.state.fields.Ez))
+end
+
+@testset "Production replication monitors and frozen probe mode" begin
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8, zmin=-4.0e-8, film_model=model,
+    )
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                        dx=1.0e-7, dy=5.0e-8, dz=5.0e-8, courant=0.25),
+        source=SourceConfig(kind=:soft, component=:Ez, amplitude=1.0, tau=8e-15, t0=24e-15),
+        probe=ProbeConfig(kind=:plane, component=:Ez, amplitude=0.1, tau=8e-15, t0=24e-15,
+                          position=1.0e-7),
+        pml=PMLConfig(cells=1),
+        model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=1),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64),
+        steps=2,
+    )
+    st = init_state(cfg; model=model, scene=dev)
+    avg = FilmAverage()
+    view = (; fields=to_host(st.fields), grid=st.grid, t=0.0, n=0, dt=st.dt,
+            dimension=3, mode=:TM, state=st)
+    record!(avg, view)
+    data = monitor_data(avg)
+    @test length(data.mag_time) == 1
+    @test isfinite(data.m_TM_x_reduced[1])
+    active = film_active_snapshot(st)
+    @test length(active.active_linear_index) == st.region.n_material
+
+    snap = magnetization_snapshot(st)
+    mx0 = copy(to_host(st.mag.m_TM_x))
+    configure_probe_mode!(st; lambda0=532e-9, freeze_magnetization=true)
+    step!(st)
+    @test to_host(st.mag.m_TM_x) == mx0
+    apply_magnetization!(st, snap)
+    @test to_host(st.mag.m_TM_x) == snap.m_TM_x
+
+    readout = ProbeReadout(pre=1.0e-7, post=4.0e-7, lambda0=532e-9, trace_stride=1)
+    view2 = (; fields=to_host(st.fields), grid=st.grid, t=st.n * st.dt, n=st.n, dt=st.dt,
+             dimension=3, mode=:TM, state=st)
+    record!(readout, view2)
+    shot = probe_shot(readout; state_label="unit", is_reference=false, dt=st.dt, steps_probe=1)
+    @test length(shot.T_omega) == 5
+    @test isfinite(shot.T_plus_R_plus_A)
+end
+
+@testset "Probe spectral Poynting and reference normalization" begin
+    # Drive a ProbeReadout with an analytic forward plane wave (Ez, Hy = -Ez/Z0) so the
+    # spectral path is exercised deterministically. The DFT now accumulates H as well as
+    # E, so Sx(ω) is a genuine complex Poynting cross-power and R_omega is a real
+    # reference-normalized reflection — not the identically-zero placeholder (finding 1).
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8, zmin=-4.0e-8, film_model=model,
+    )
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                        dx=1.0e-7, dy=5.0e-8, dz=5.0e-8, courant=0.25),
+        source=SourceConfig(kind=:soft, component=:Ez, amplitude=1.0, tau=8e-15, t0=24e-15),
+        pml=PMLConfig(cells=1),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64),
+        steps=2,
+    )
+    st = init_state(cfg; model=model, scene=dev)
+    g = st.grid
+    Nx = length(g.x.centers); Ny = length(g.y.centers); Nz = length(g.z.centers)
+    omega0 = 2pi * FDTDParams(532e-9).c0 / 532e-9
+    Z0 = 376.730313668
+    readout = ProbeReadout(pre=1.0e-7, post=4.0e-7, lambda0=532e-9, trace_stride=1, spectrum_bins=5)
+    dt = 1.0e-17
+    for n in 1:200
+        t = n * dt
+        Ez = fill(cos(omega0 * t), Nx, Ny, Nz)
+        Hy = fill(-cos(omega0 * t) / Z0, Nx, Ny, Nz)
+        fields = (; Ex=zeros(Nx, Ny, Nz), Ey=zeros(Nx, Ny, Nz), Ez=Ez,
+                  Hx=zeros(Nx, Ny, Nz), Hy=Hy, Hz=zeros(Nx, Ny, Nz))
+        sim = (; fields=fields, grid=g, t=t, n=n, dt=dt, dimension=3, mode=:TM)
+        record!(readout, sim)
+    end
+    ref = probe_shot(readout; state_label="reference", is_reference=true, dt=dt)
+    # Forward power is present, and a self-reference reflects nothing.
+    @test maximum(abs, ref.Sx_pre_net_re) > 0
+    @test all(q -> !isfinite(ref.R_omega[q]) || isapprox(ref.R_omega[q], 0.0; atol=1e-9),
+              eachindex(ref.R_omega))
+    # Reference normalization: doubling the incident spectrum gives R_omega = 0.5 on
+    # populated bins — the regression guard against R_omega ≡ 0.
+    nonref = probe_shot(readout; state_label="initial", is_reference=false, dt=dt,
+                        incident_energy=2 * ref.incident_energy_J, incident_sx=2 .* ref.Sx_inc)
+    @test any(q -> isfinite(nonref.R_omega[q]) && nonref.R_omega[q] != 0.0, eachindex(nonref.R_omega))
+    @test isapprox(maximum(filter(isfinite, nonref.R_omega)), 0.5; atol=1e-6)
+end
+
+@testset "Snapshot helpers safe without magnetization" begin
+    # Under-resolved grid: the 80 nm film straddles no cell center, so n_material == 0 and
+    # the state carries no magnetization. The snapshot helpers must return empty arrays
+    # instead of crashing on `nothing` (review finding 3).
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8, zmin=-4.0e-8, film_model=model,
+    )
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                        dx=1.0e-7, dy=1.0e-7, dz=1.0e-7, courant=0.25),
+        source=SourceConfig(kind=:soft, component=:Ez, amplitude=1.0, tau=8e-15, t0=24e-15),
+        pml=PMLConfig(cells=1),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64),
+        steps=2,
+    )
+    st = init_state(cfg; model=model, scene=dev)
+    @test st.region.n_material == 0
+    @test st.mag === nothing
+    active = film_active_snapshot(st)
+    @test isempty(active.active_linear_index)
+    @test isempty(active.m_TM_x_reduced_active_cells)
+    @test isempty(active.Te_active_cells)
+    snap = magnetization_snapshot(st)
+    @test isempty(snap.m_TM_x)
+    @test isempty(snap.m_RE_z)
+    @test isempty(snap.material_cells)
+end
+
+@testset "Exact reference NOT-gate mesh" begin
+    # The verbatim port of the reference grid builders must reproduce the validated mesh
+    # bit-for-bit: 4099x190x100 cells and the exact CFL dt at courant 0.99.
+    g = not_gate_reference_grid()
+    @test length(g.x.centers) == 4099
+    @test length(g.y.centers) == 190
+    @test length(g.z.centers) == 100
+    @test cfl_dt(g, FDTDParams(); courant=0.99) == 1.1218649561077176e-17
+    # mesh=:reference routes grid_from_config to the same grid.
+    cfg = SimConfig(grid=GridConfig(xlim=(0.0, 60e-6), ylim=(-3e-6, 3e-6), zlim=(-1.3e-6, 1.7e-6),
+                                    mesh=:reference, courant=0.99))
+    gc = MagnetoPhotonic.grid_from_config(cfg.grid)
+    @test (length(gc.x.centers), length(gc.y.centers), length(gc.z.centers)) == (4099, 190, 100)
+end
+
+@testset "Yee-staggered model active cells" begin
+    # model_stagger selects film cells at the staggered Ex/Ey/Ez Yee positions and unions
+    # them (matching the reference's act_idx_all). The union must be a SUPERSET of the
+    # cell-centred selection, and the solver must accept it end-to-end. (On the exact
+    # reference mesh this union reproduces the validated 1323-cell set bit-for-bit.)
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8, zmin=-4.0e-8, film_model=model,
+    )
+    grid = MagnetoPhotonic.grid_from_config(
+        GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                   dx=1.0e-7, dy=2.5e-8, dz=2.5e-8))
+    scn = MagnetoPhotonic._scene_object(dev)
+    base = MagnetoPhotonic.rasterize(scn, grid; subpixel=8, model_stagger=false)
+    stag = MagnetoPhotonic.rasterize(scn, grid; subpixel=8, model_stagger=true)
+    @test base.n_material > 0
+    @test stag.n_material >= base.n_material
+    @test Set(base.material_cells) ⊆ Set(stag.material_cells)
+
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 5.0e-7), ylim=(-1.0e-7, 1.0e-7), zlim=(-1.0e-7, 1.0e-7),
+                        dx=1.0e-7, dy=2.5e-8, dz=2.5e-8, courant=0.25,
+                        subpixel=8, model_yee_stagger=true),
+        source=SourceConfig(kind=:soft, component=:Ez, amplitude=1.0, tau=8e-15, t0=24e-15),
+        pml=PMLConfig(cells=1),
+        model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=1),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64), steps=2)
+    st = init_state(cfg; model=model, scene=dev)
+    @test st.region.n_material == stag.n_material
+    step!(st)
+    @test all(isfinite, to_host(st.fields.Ez))
+end
+
+@testset "Anisotropic slab CPML" begin
+    # PMLConfig accepts a per-axis (npx,npy,npz) tuple; the slab CPML must size each ψ by
+    # its derivative axis and the propagation-axis source must use the x-PML width.
+    model = MagnetoOpticModel()
+    dev = waveguide_device(
+        straight((0.0, 0.0), (2.0e-7, 0.0); width=8.0e-8),
+        film_region(2.0e-7, 3.0e-7; width=8.0e-8),
+        straight((3.0e-7, 0.0), (5.0e-7, 0.0); width=8.0e-8);
+        height=8.0e-8, zmin=-4.0e-8, film_model=model)
+    cfg = SimConfig(
+        grid=GridConfig(xlim=(0.0, 1.2e-6), ylim=(-1.5e-7, 1.5e-7), zlim=(-1.5e-7, 1.5e-7),
+                        dx=4.0e-8, dy=2.5e-8, dz=2.5e-8, courant=0.3),
+        source=SourceConfig(kind=:soft, component=:Ez, amplitude=1.0, tau=8e-15, t0=24e-15),
+        pml=PMLConfig(cells=(5, 3, 2)),
+        model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=1),
+        backend=BackendConfig(device=:cpu, compute_precision=:f64), steps=10)
+    st = init_state(cfg; model=model, scene=dev)
+    Nx = length(st.grid.x.centers); Ny = length(st.grid.y.centers); Nz = length(st.grid.z.centers)
+    @test (Int(st.cpml.Npml_x), Int(st.cpml.Npml_y), Int(st.cpml.Npml_z)) == (5, 3, 2)
+    @test size(st.cpml.psi_Hyx_lo) == (5, Ny, Nz)    # x-derivative slab
+    @test size(st.cpml.psi_Hxy_lo) == (Nx, 3, Nz)    # y-derivative slab
+    @test size(st.cpml.psi_Hxz_lo) == (Nx, Ny, 2)    # z-derivative slab
+    @test st.source[3][1] == 5 + 2                   # source x-index uses the x-PML width
+    for _ in 1:10; step!(st); end
+    @test all(isfinite, to_host(st.fields.Ez))
 end

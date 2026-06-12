@@ -15,38 +15,43 @@ _pml_cells(boundary::PML, axis::Axis1D) =
 _pml_cells(::PEC, axis::Axis1D) = 0
 _pml_cells(::Periodic, axis::Axis1D) = 0
 
-mutable struct CPMLState1D
-    x::CPMLAxis
-    psi_Hyx::Vector{Float64}
-    psi_Dzx::Vector{Float64}
+mutable struct CPMLState1D{AX,A}
+    x::AX
+    psi_Hyx::A
+    psi_Dzx::A
 end
 
-mutable struct CPMLState2D
-    x::CPMLAxis
-    y::CPMLAxis
-    psi_Hxy::Array{Float64,2}
-    psi_Hyx::Array{Float64,2}
-    psi_Hzx::Array{Float64,2}
-    psi_Hzy::Array{Float64,2}
-    psi_Dxy::Array{Float64,2}
-    psi_Dyx::Array{Float64,2}
-    psi_Dzx::Array{Float64,2}
-    psi_Dzy::Array{Float64,2}
+mutable struct CPMLState2D{AX,AY,A}
+    x::AX
+    y::AY
+    psi_Hxy::A
+    psi_Hyx::A
+    psi_Hzx::A
+    psi_Hzy::A
+    psi_Dxy::A
+    psi_Dyx::A
+    psi_Dzx::A
+    psi_Dzy::A
 end
 
-function build_cpml(grid::Grid1D, n_pml, dt::Real, p::FDTDParams=FDTDParams(); kwargs...)
+Adapt.@adapt_structure CPMLState1D
+Adapt.@adapt_structure CPMLState2D
+
+function build_cpml(grid::Grid1D, n_pml, dt::Real, p::FDTDParams=FDTDParams();
+                    backend::AbstractBackend=CPUBackend(), T::Type=Float64, kwargs...)
     npx = n_pml isa Integer ? n_pml : n_pml[1]
-    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; kwargs...)
+    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; backend=backend, T=T, kwargs...)
     Nx = length(grid.x.centers)
-    return CPMLState1D(ax, zeros(Float64, Nx), zeros(Float64, Nx))
+    return CPMLState1D(ax, zeros_backend(backend, T, Nx), zeros_backend(backend, T, Nx))
 end
 
-function build_cpml(grid::Grid2D, n_pml, dt::Real, p::FDTDParams=FDTDParams(); kwargs...)
+function build_cpml(grid::Grid2D, n_pml, dt::Real, p::FDTDParams=FDTDParams();
+                    backend::AbstractBackend=CPUBackend(), T::Type=Float64, kwargs...)
     npx, npy = n_pml isa Integer ? (n_pml, n_pml) : (n_pml[1], n_pml[2])
-    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; kwargs...)
-    ay = _cpml_axis(grid.y.edges, npy, Float64(dt), p; kwargs...)
+    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; backend=backend, T=T, kwargs...)
+    ay = _cpml_axis(grid.y.edges, npy, Float64(dt), p; backend=backend, T=T, kwargs...)
     Nx, Ny = length(grid.x.centers), length(grid.y.centers)
-    z2() = zeros(Float64, Nx, Ny)
+    z2() = zeros_backend(backend, T, Nx, Ny)
     return CPMLState2D(ax, ay, z2(), z2(), z2(), z2(), z2(), z2(), z2(), z2())
 end
 

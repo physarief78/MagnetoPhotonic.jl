@@ -33,8 +33,10 @@ function run_pump_probe_sim(config::SimConfig=SimConfig(); model::AbstractPhysic
                             n_pml::Integer=8, enable_magneto_optic::Bool=true,
                             scene=nothing, h5_filename=nothing)
     p = FDTDParams(config.source.lambda0)
-    grid = uniform_grid(config.grid.xlim, config.grid.ylim, config.grid.zlim, config.grid.dx)
-    scn = scene === nothing ? pump_probe_scene(config, model; p=p) : scene
+    b = backend(config)
+    CT = compute_type(config)
+    grid = grid_from_config(config; film_region=_film_bounds_for_grid(config, scene))
+    scn = scene === nothing ? pump_probe_scene(config, model; p=p) : _scene_object(scene)
     geo = rasterize(scn, grid; subpixel=1)
 
     dt = cfl_dt(grid, p; courant=config.grid.courant)
@@ -46,7 +48,7 @@ function run_pump_probe_sim(config::SimConfig=SimConfig(); model::AbstractPhysic
     src_index = (max(2, n_pml + 2), jc, kc)
 
     st = FDTDState(grid, geo; dt=dt, params=p, source=(pulse, config.source.component, src_index),
-                   T=config.precision, model=model, n_pml=n_pml,
+                   backend=b, compute_precision=CT, T=config.precision, model=model, n_pml=n_pml,
                    enable_magneto_optic=enable_magneto_optic,
                    multiphysics_every=config.model.multiphysics_subcycle,
                    subcycles=config.model.multiphysics_subcycle,
@@ -54,14 +56,14 @@ function run_pump_probe_sim(config::SimConfig=SimConfig(); model::AbstractPhysic
                    absorption_model=config.model.absorption_model)
 
     has_mag = st.mag !== nothing
-    m_TM_x0 = has_mag ? copy(st.mag.m_TM_x) : Float64[]
-    m_RE_x0 = has_mag ? copy(st.mag.m_RE_x) : Float64[]
+    m_TM_x0 = has_mag ? copy(to_host(st.mag.m_TM_x)) : Float64[]
+    m_RE_x0 = has_mag ? copy(to_host(st.mag.m_RE_x)) : Float64[]
 
     energies = Float64[]
     Te_peak = Float64[]
     function cb(s)
-        push!(energies, field_energy(s.fields, s.grid, s.params))
-        s.thermal !== nothing && push!(Te_peak, maximum(s.thermal.Te))
+        push!(energies, field_energy(to_host(s.fields), s.grid, s.params))
+        s.thermal !== nothing && push!(Te_peak, maximum(to_host(s.thermal.Te)))
     end
 
     # Phase 1: pump
@@ -85,9 +87,10 @@ function run_pump_probe_sim(config::SimConfig=SimConfig(); model::AbstractPhysic
     # Switching diagnostics: fraction of material cells whose FeCo x-component flipped.
     switched_fraction = 0.0
     if has_mag && !isempty(m_TM_x0)
+        m_TM_x_now = to_host(st.mag.m_TM_x)
         flips = 0
         for n in eachindex(m_TM_x0)
-            (sign(st.mag.m_TM_x[n]) != sign(m_TM_x0[n]) && abs(st.mag.m_TM_x[n]) > 0.1) && (flips += 1)
+            (sign(m_TM_x_now[n]) != sign(m_TM_x0[n]) && abs(m_TM_x_now[n]) > 0.1) && (flips += 1)
         end
         switched_fraction = flips / length(m_TM_x0)
     end
@@ -95,9 +98,9 @@ function run_pump_probe_sim(config::SimConfig=SimConfig(); model::AbstractPhysic
     result = (state=st, grid=grid, geo=geo, model=model, energies=energies, Te_peak=Te_peak,
               n_material=geo.n_material,
               m_TM_x0=m_TM_x0, m_RE_x0=m_RE_x0,
-              m_TM_x=has_mag ? copy(st.mag.m_TM_x) : Float64[],
-              m_RE_x=has_mag ? copy(st.mag.m_RE_x) : Float64[],
-              Te=st.thermal === nothing ? Float64[] : copy(st.thermal.Te),
+              m_TM_x=has_mag ? copy(to_host(st.mag.m_TM_x)) : Float64[],
+              m_RE_x=has_mag ? copy(to_host(st.mag.m_RE_x)) : Float64[],
+              Te=st.thermal === nothing ? Float64[] : copy(to_host(st.thermal.Te)),
               switched_fraction=switched_fraction)
     h5_filename === nothing || save_state(String(h5_filename), result)
     return result

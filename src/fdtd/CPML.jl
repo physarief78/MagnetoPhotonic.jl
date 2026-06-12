@@ -67,8 +67,8 @@ function build_cpml_profiles_nonuniform(axis::Axis1D, N_pml::Integer, dt::Real, 
 end
 
 # ----------------------------------------------------------------------------
-# CPMLState: per-axis CFS-PML coefficients (inv_kappa, a, b) plus the twelve
-# convolution memory (psi) arrays applied inside the Yee H/E updates.
+# CPMLState: per-axis CFS-PML coefficients (inv_kappa, a, b) plus thin lo/hi
+# convolution-memory slabs applied inside the Yee H/E updates.
 #
 # Coefficient convention follows the original production kernel: `a` multiplies
 # the ALREADY spacing-scaled derivative (dE * inv_d), so `a` carries NO 1/dx
@@ -76,20 +76,23 @@ end
 # different call site). In the bulk dist == 0 ⇒ kappa = 1, a = b = 0, so the
 # update reduces exactly to plain Yee and the psi arrays stay zero.
 # ----------------------------------------------------------------------------
-struct CPMLAxis
-    inv_kappa::Vector{Float64}
-    a::Vector{Float64}
-    b::Vector{Float64}
+struct CPMLAxis{A}
+    inv_kappa::A
+    a::A
+    b::A
 end
 
+Adapt.@adapt_structure CPMLAxis
+
 function _cpml_axis(edges::Vector{Float64}, N_pml::Integer, dt::Float64, p::FDTDParams;
+                    backend::AbstractBackend=CPUBackend(), T::Type=Float64,
                     order::Float64=3.0, reflection::Float64=1e-8, kappa_max::Float64=5.0, alpha_max::Float64=0.05)
     N = length(edges) - 1
-    inv_kappa = ones(Float64, N)
-    a = zeros(Float64, N)
-    b = zeros(Float64, N)
+    inv_kappa = ones(T, N)
+    a = zeros(T, N)
+    b = zeros(T, N)
     if N_pml <= 0 || N < 2 * N_pml + 1
-        return CPMLAxis(inv_kappa, a, b)
+        return CPMLAxis(adapt_backend(backend, inv_kappa), adapt_backend(backend, a), adapt_backend(backend, b))
     end
     eta = sqrt(p.mu0 / p.eps0)
     th_lo = edges[N_pml + 1] - edges[1]
@@ -111,37 +114,56 @@ function _cpml_axis(edges::Vector{Float64}, N_pml::Integer, dt::Float64, p::FDTD
             sigma = sigma_max * dist^order
             kappa = 1.0 + (kappa_max - 1.0) * dist^order
             alpha = alpha_max * (1.0 - dist)^order
-            inv_kappa[i] = 1.0 / kappa
-            b[i] = exp(-(sigma / (kappa * p.eps0) + alpha / p.eps0) * dt)
+            inv_kappa[i] = T(1.0 / kappa)
+            b[i] = T(exp(-(sigma / (kappa * p.eps0) + alpha / p.eps0) * dt))
             denom = sigma * kappa + kappa^2 * alpha
-            a[i] = denom == 0.0 ? 0.0 : (sigma / denom) * (b[i] - 1.0)
+            a[i] = T(denom == 0.0 ? 0.0 : (sigma / denom) * (Float64(b[i]) - 1.0))
         end
     end
-    return CPMLAxis(inv_kappa, a, b)
+    return CPMLAxis(adapt_backend(backend, inv_kappa), adapt_backend(backend, a), adapt_backend(backend, b))
 end
 
-mutable struct CPMLState
-    x::CPMLAxis
-    y::CPMLAxis
-    z::CPMLAxis
-    # H-update convolution memory (named psi_H<component><deriv-axis>)
-    psi_Hxy::Array{Float64,3}; psi_Hxz::Array{Float64,3}
-    psi_Hyz::Array{Float64,3}; psi_Hyx::Array{Float64,3}
-    psi_Hzx::Array{Float64,3}; psi_Hzy::Array{Float64,3}
-    # E/D-update convolution memory (named psi_D<component><deriv-axis>)
-    psi_Dxy::Array{Float64,3}; psi_Dxz::Array{Float64,3}
-    psi_Dyz::Array{Float64,3}; psi_Dyx::Array{Float64,3}
-    psi_Dzx::Array{Float64,3}; psi_Dzy::Array{Float64,3}
+mutable struct CPMLState{AX,AY,AZ,A}
+    x::AX
+    y::AY
+    z::AZ
+    Npml_x::Int32
+    Npml_y::Int32
+    Npml_z::Int32
+    # H-update convolution memory (named psi_H<component><deriv-axis>_<side>)
+    psi_Hxy_lo::A; psi_Hxy_hi::A
+    psi_Hxz_lo::A; psi_Hxz_hi::A
+    psi_Hyz_lo::A; psi_Hyz_hi::A
+    psi_Hyx_lo::A; psi_Hyx_hi::A
+    psi_Hzx_lo::A; psi_Hzx_hi::A
+    psi_Hzy_lo::A; psi_Hzy_hi::A
+    # E/D-update convolution memory (named psi_D<component><deriv-axis>_<side>)
+    psi_Dxy_lo::A; psi_Dxy_hi::A
+    psi_Dxz_lo::A; psi_Dxz_hi::A
+    psi_Dyz_lo::A; psi_Dyz_hi::A
+    psi_Dyx_lo::A; psi_Dyx_hi::A
+    psi_Dzx_lo::A; psi_Dzx_hi::A
+    psi_Dzy_lo::A; psi_Dzy_hi::A
 end
 
-function build_cpml(grid::Grid3D, n_pml, dt::Real, p::FDTDParams=FDTDParams(); kwargs...)
+Adapt.@adapt_structure CPMLState
+
+_cpml_width(N::Integer, np::Integer) = (np > 0 && N >= 2 * np + 1) ? Int(np) : 0
+
+function build_cpml(grid::Grid3D, n_pml, dt::Real, p::FDTDParams=FDTDParams();
+                    backend::AbstractBackend=CPUBackend(), T::Type=Float64, kwargs...)
     npx, npy, npz = n_pml isa Integer ? (n_pml, n_pml, n_pml) : (n_pml[1], n_pml[2], n_pml[3])
-    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; kwargs...)
-    ay = _cpml_axis(grid.y.edges, npy, Float64(dt), p; kwargs...)
-    az = _cpml_axis(grid.z.edges, npz, Float64(dt), p; kwargs...)
+    ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; backend=backend, T=T, kwargs...)
+    ay = _cpml_axis(grid.y.edges, npy, Float64(dt), p; backend=backend, T=T, kwargs...)
+    az = _cpml_axis(grid.z.edges, npz, Float64(dt), p; backend=backend, T=T, kwargs...)
     Nx, Ny, Nz = length(grid.x.centers), length(grid.y.centers), length(grid.z.centers)
-    z3() = zeros(Float64, Nx, Ny, Nz)
-    return CPMLState(ax, ay, az,
-        z3(), z3(), z3(), z3(), z3(), z3(),
-        z3(), z3(), z3(), z3(), z3(), z3())
+    wx = _cpml_width(Nx, npx)
+    wy = _cpml_width(Ny, npy)
+    wz = _cpml_width(Nz, npz)
+    sx() = zeros_backend(backend, T, wx, Ny, Nz)
+    sy() = zeros_backend(backend, T, Nx, wy, Nz)
+    sz() = zeros_backend(backend, T, Nx, Ny, wz)
+    return CPMLState(ax, ay, az, Int32(wx), Int32(wy), Int32(wz),
+        sy(), sy(), sz(), sz(), sz(), sz(), sx(), sx(), sx(), sx(), sy(), sy(),
+        sy(), sy(), sz(), sz(), sz(), sz(), sx(), sx(), sx(), sx(), sy(), sy())
 end
