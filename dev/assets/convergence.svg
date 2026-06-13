@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440" font-family="sans-serif"><rect width="760" height="440" fill="white"/>
+<rect x="72" y="42" width="660" height="342" fill="none" stroke="#999"/>
+<line x1="72.0" y1="42" x2="72.0" y2="384" stroke="#eee"/><line x1="72" y1="384.0" x2="732" y2="384.0" stroke="#eee"/>
+<text x="72.0" y="402" font-size="12" text-anchor="middle" fill="#333">7e+00</text>
+<text x="64" y="388.0" font-size="12" text-anchor="end" fill="#333">4e-04</text>
+<line x1="237.0" y1="42" x2="237.0" y2="384" stroke="#eee"/><line x1="72" y1="298.5" x2="732" y2="298.5" stroke="#eee"/>
+<text x="237.0" y="402" font-size="12" text-anchor="middle" fill="#333">1e+01</text>
+<text x="64" y="302.5" font-size="12" text-anchor="end" fill="#333">1e-03</text>
+<line x1="402.0" y1="42" x2="402.0" y2="384" stroke="#eee"/><line x1="72" y1="213.0" x2="732" y2="213.0" stroke="#eee"/>
+<text x="402.0" y="402" font-size="12" text-anchor="middle" fill="#333">2e+01</text>
+<text x="64" y="217.0" font-size="12" text-anchor="end" fill="#333">2e-03</text>
+<line x1="567.0" y1="42" x2="567.0" y2="384" stroke="#eee"/><line x1="72" y1="127.5" x2="732" y2="127.5" stroke="#eee"/>
+<text x="567.0" y="402" font-size="12" text-anchor="middle" fill="#333">3e+01</text>
+<text x="64" y="131.5" font-size="12" text-anchor="end" fill="#333">6e-03</text>
+<line x1="732.0" y1="42" x2="732.0" y2="384" stroke="#eee"/><line x1="72" y1="42.0" x2="732" y2="42.0" stroke="#eee"/>
+<text x="732.0" y="402" font-size="12" text-anchor="middle" fill="#333">4e+01</text>
+<text x="64" y="46.0" font-size="12" text-anchor="end" fill="#333">2e-02</text>
+<polyline points="732.0,54.7 623.1,106.5 469.5,180.6 334.5,245.6 207.1,306.6 72.0,371.2" fill="none" stroke="#1f77b4" stroke-width="2.4"/>
+<circle cx="732.0" cy="54.666666666666686" r="3.5" fill="#1f77b4"/>
+<circle cx="623.0651109763581" cy="106.46201611371595" r="3.5" fill="#1f77b4"/>
+<circle cx="469.5300082211276" cy="180.59656279346052" r="3.5" fill="#1f77b4"/>
+<circle cx="334.4699917788725" cy="245.59832355400528" r="3.5" fill="#1f77b4"/>
+<circle cx="207.060016442255" cy="306.5661964998246" r="3.5" fill="#1f77b4"/>
+<circle cx="72.0" cy="371.2348054292503" r="3.5" fill="#1f77b4"/>
+<polyline points="732.0,54.7 623.1,106.9 469.5,180.6 334.5,245.4 207.1,306.5 72.0,371.3" fill="none" stroke="#d62728" stroke-width="2.4" stroke-dasharray="7 5"/>
+<text x="402.0" y="24" font-size="16" text-anchor="middle" font-weight="bold">Grid convergence (source-free Yee)</text>
+<text x="402.0" y="426" font-size="13" text-anchor="middle">dx  (nm)</text>
+<text x="18" y="213.0" font-size="13" text-anchor="middle" transform="rotate(-90 18 213.0)">relative L2 error</text>
+<line x1="582" y1="58" x2="606" y2="58" stroke="#1f77b4" stroke-width="3"/><text x="612" y="62" font-size="12">measured L2</text>
+<line x1="582" y1="76" x2="606" y2="76" stroke="#d62728" stroke-width="3"/><text x="612" y="80" font-size="12">O(dx^2) reference</text>
+</svg>
