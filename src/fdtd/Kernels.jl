@@ -394,11 +394,26 @@ end
     end  # @inbounds
 end
 
+# The DFT phase factor cis(-ω_q·t)·dt depends ONLY on the bin q and the time t, not on
+# (j,k) — so the original per-cell cos/sin recomputed it Ny·Nz (~19k) times per bin per
+# step, a pile of Float64 transcendentals (the slowest GPU path on a consumer card) that
+# dominated the probe readout. This nb-thread kernel evaluates the nb factors ONCE into a
+# small device buffer; probe_dft_accumulate_kernel! then just does a complex multiply-add.
+# Bit-identical math: (cos(ωt) − i·sin(ωt))·dt, same as before.
+@kernel function probe_phase_factors_kernel!(phase_factors, @Const(omega_bins), t, dt)
+    q = @index(Global)
+    @inbounds begin
+        phase = Float64(omega_bins[q]) * Float64(t)
+        dtt = Float64(dt)
+        phase_factors[q] = ComplexF64(cos(phase) * dtt, -sin(phase) * dtt)
+    end
+end
+
 @kernel function probe_dft_accumulate_kernel!(dft_Ey_pre, dft_Ez_pre, dft_Hy_pre, dft_Hz_pre,
                                               dft_Ey_post, dft_Ez_post, dft_Hy_post, dft_Hz_post,
                                               energy_pre, energy_post,
-                                              Ey, Ez, Hy, Hz, omega_bins,
-                                              ix_pre, ix_post, t, dt, nb)
+                                              Ey, Ez, Hy, Hz, @Const(phase_factors),
+                                              ix_pre, ix_post, dt, nb)
     I = @index(Global, Cartesian)
     j = I[1]
     k = I[2]
@@ -412,36 +427,36 @@ end
         hyq = Float64(Hy[ix_post, j, k])
         hzq = Float64(Hz[ix_post, j, k])
         dtt = Float64(dt)
-        tt = Float64(t)
         energy_pre[j, k] += (eyp * hzp - ezp * hyp) * dtt
         energy_post[j, k] += (eyq * hzq - ezq * hyq) * dtt
         for q in 1:nb
-            phase = Float64(omega_bins[q]) * tt
-            c = cos(phase) * dtt
-            s = -sin(phase) * dtt
-            dft_Ey_pre[j, k, q] += ComplexF64(eyp * c, eyp * s)
-            dft_Ez_pre[j, k, q] += ComplexF64(ezp * c, ezp * s)
-            dft_Hy_pre[j, k, q] += ComplexF64(hyp * c, hyp * s)
-            dft_Hz_pre[j, k, q] += ComplexF64(hzp * c, hzp * s)
-            dft_Ey_post[j, k, q] += ComplexF64(eyq * c, eyq * s)
-            dft_Ez_post[j, k, q] += ComplexF64(ezq * c, ezq * s)
-            dft_Hy_post[j, k, q] += ComplexF64(hyq * c, hyq * s)
-            dft_Hz_post[j, k, q] += ComplexF64(hzq * c, hzq * s)
+            pf = phase_factors[q]
+            dft_Ey_pre[j, k, q] += eyp * pf
+            dft_Ez_pre[j, k, q] += ezp * pf
+            dft_Hy_pre[j, k, q] += hyp * pf
+            dft_Hz_pre[j, k, q] += hzp * pf
+            dft_Ey_post[j, k, q] += eyq * pf
+            dft_Ez_post[j, k, q] += ezq * pf
+            dft_Hy_post[j, k, q] += hyq * pf
+            dft_Hz_post[j, k, q] += hzq * pf
         end
     end
 end
 
-@kernel function probe_trace_plane_kernel!(work_Ey_pre, work_Ez_pre, work_Ey_post, work_Ez_post,
-                                           Ey, Ez, mode_w, area_yz, ix_pre, ix_post)
+# The four mode-overlap-weighted plane samples (Ey/Ez at the pre/post planes) are written
+# into ONE (Ny, Nz, 4) buffer so the host can collapse them with a single
+# `sum(buf; dims=(1,2))` reduction and one 4-element device→host copy — replacing the four
+# separate reduce_sum calls (4 kernels + 4 blocking scalar downloads) per trace step.
+@kernel function probe_trace_plane_kernel!(work_trace, Ey, Ez, mode_w, area_yz, ix_pre, ix_post)
     I = @index(Global, Cartesian)
     j = I[1]
     k = I[2]
     @inbounds begin
         w = Float64(mode_w[j, k]) * Float64(area_yz[j, k])
-        work_Ey_pre[j, k] = Float64(Ey[ix_pre, j, k]) * w
-        work_Ez_pre[j, k] = Float64(Ez[ix_pre, j, k]) * w
-        work_Ey_post[j, k] = Float64(Ey[ix_post, j, k]) * w
-        work_Ez_post[j, k] = Float64(Ez[ix_post, j, k]) * w
+        work_trace[j, k, 1] = Float64(Ey[ix_pre, j, k]) * w
+        work_trace[j, k, 2] = Float64(Ez[ix_pre, j, k]) * w
+        work_trace[j, k, 3] = Float64(Ey[ix_post, j, k]) * w
+        work_trace[j, k, 4] = Float64(Ez[ix_post, j, k]) * w
     end
 end
 
@@ -633,32 +648,35 @@ function _ka_multiphysics_step!(backend::AbstractBackend, thermal::ThermalState,
     return thermal
 end
 
+# `phase_factors` is a caller-owned device scratch buffer of length nb (the bin count).
+# We fill it once per step with the nb DFT phase factors, then run the accumulate kernel —
+# so the (Ny·Nz) cells read the factors instead of each recomputing Float64 sin/cos.
 function _ka_probe_dft_accumulate!(backend::AbstractBackend, fields,
                                    dft_Ey_pre, dft_Ez_pre, dft_Hy_pre, dft_Hz_pre,
                                    dft_Ey_post, dft_Ez_post, dft_Hy_post, dft_Hz_post,
-                                   energy_pre, energy_post, omega_bins,
+                                   energy_pre, energy_post, omega_bins, phase_factors,
                                    ix_pre::Integer, ix_post::Integer, t::Real, dt::Real)
     Ny, Nz = size(energy_pre)
     (Ny > 0 && Nz > 0) || return nothing
     nb = length(omega_bins)
     nb > 0 || return nothing
+    phase_kernel = _ka_kernel_cached(probe_phase_factors_kernel!, backend, _workgroup(backend, _WG_1D))
+    phase_kernel(phase_factors, omega_bins, Float64(t), Float64(dt); ndrange=nb)
     kernel = _ka_kernel_cached(probe_dft_accumulate_kernel!, backend, _workgroup(backend, _WG_2D))
     kernel(dft_Ey_pre, dft_Ez_pre, dft_Hy_pre, dft_Hz_pre,
            dft_Ey_post, dft_Ez_post, dft_Hy_post, dft_Hz_post,
            energy_pre, energy_post, fields.Ey, fields.Ez, fields.Hy, fields.Hz,
-           omega_bins, Int32(ix_pre), Int32(ix_post), Float64(t), Float64(dt), Int32(nb);
+           phase_factors, Int32(ix_pre), Int32(ix_post), Float64(dt), Int32(nb);
            ndrange=(Ny, Nz))
     return nothing
 end
 
-function _ka_probe_trace_plane!(backend::AbstractBackend,
-                                work_Ey_pre, work_Ez_pre, work_Ey_post, work_Ez_post,
+function _ka_probe_trace_plane!(backend::AbstractBackend, work_trace,
                                 fields, mode_w, area_yz, ix_pre::Integer, ix_post::Integer)
-    Ny, Nz = size(work_Ey_pre)
+    Ny, Nz = size(work_trace, 1), size(work_trace, 2)
     (Ny > 0 && Nz > 0) || return nothing
     kernel = _ka_kernel_cached(probe_trace_plane_kernel!, backend, _workgroup(backend, _WG_2D))
-    kernel(work_Ey_pre, work_Ez_pre, work_Ey_post, work_Ez_post,
-           fields.Ey, fields.Ez, mode_w, area_yz, Int32(ix_pre), Int32(ix_post);
+    kernel(work_trace, fields.Ey, fields.Ez, mode_w, area_yz, Int32(ix_pre), Int32(ix_post);
            ndrange=(Ny, Nz))
     return nothing
 end

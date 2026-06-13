@@ -6,12 +6,13 @@
 
 ```julia
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using Pkg; Pkg.test()'      # 88 tests, CPU only
+julia --project=. -e 'using Pkg; Pkg.test()'      # CPU test suite
 ```
 
-The compute path is pure Julia/CPU. `CUDA`, `HDF5` and `CairoMakie` are *optional* weak
-dependencies loaded as package extensions (device arrays, HDF5 I/O, plotting/video); none
-are required to run or test the package.
+The CPU path is the test-suite baseline and needs no extra dependencies. GPU execution is
+opt-in: `using CUDA` loads the CUDA backend extension. `HDF5` and `CairoMakie` are likewise
+*optional* weak dependencies (HDF5 I/O, plotting/video). See [Capabilities](@ref) for the
+backend and precision details.
 
 ## Anatomy of a `Simulation`
 
@@ -68,6 +69,8 @@ run!(sim, 2000; callback = s -> (peak[] = max(peak[], field_energy(s.fields, s.g
 
 ## Where next
 
+- [Fundamentals](@ref) — the physics & numerics behind the solver.
 - [EM-FDTD Tutorial](@ref) — 1-D/2-D/3-D, materials, boundaries, monitors, validation.
 - [Magneto-Optic Switching](@ref) — the coupled 4TM + LLB all-optical switching model.
+- [Capabilities](@ref) — what the package can compute, backends/GPU, performance, validation.
 - [API Reference](@ref) — the full public surface.

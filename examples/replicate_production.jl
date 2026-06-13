@@ -37,7 +37,7 @@ const TIER = get(ARGS, 1, "smoke")
 # Load the CUDA backend extension at TOP LEVEL for the GPU tiers, before any GPU code runs.
 # Loading it lazily inside a function trips a world-age error: the already-running call
 # cannot see the backend methods the extension adds.
-if TIER in ("production", "probe", "spotcheck")
+if TIER in ("production", "probe", "spotcheck", "probespeed")
     try
         @eval using CUDA
     catch err
@@ -87,6 +87,19 @@ outpath(name::AbstractString) = joinpath(OUTDIR, name)
 # the grid alone (no field allocation) so phase durations map to integer step counts.
 package_dt(cfg) = cfl_dt(MagnetoPhotonic.grid_from_config(cfg.grid), FDTDParams(); courant=cfg.grid.courant)
 pkg_steps(duration::Real, dt::Real) = max(1, ceil(Int, Float64(duration) / Float64(dt)))
+
+# CPML ψ-slab storage precision, overridable for A/B timing via MP_CPML_PSI=f32|f64.
+# Default (env unset) is Float32 for BOTH phases: a controlled A/B (2026-06-13) showed the
+# 6 GiB card hits a 0-free-VRAM WDDM cliff with Float64 ψ that slows ALL kernels, and
+# Float32 ψ frees ~0.47 GiB to clear it — faster for the pump (H/E) and the probe (readout
+# buffers stay resident). Math stays Float64 (kernels cast ψ on read). Set the env var to
+# force Float64 for whichever phase runs, e.g. to re-measure the cliff or for A/B.
+function _cpml_psi_T(default::Type)
+    v = lowercase(strip(get(ENV, "MP_CPML_PSI", "")))
+    (v == "f32" || v == "float32") && return Float32
+    (v == "f64" || v == "float64") && return Float64
+    return default
+end
 
 # CUDA is loaded at top level (above) for the GPU tiers; here we just verify a functional GPU.
 function ensure_cuda()
@@ -405,8 +418,10 @@ function run_pump_relax(cfg, dev, model; pump_steps=nothing, pump_until=nothing,
                         pump_source_fn=nothing, frame_writer_fn=nothing, frame_every=0)
     # enable_magneto_optic=false: the reference pump loop runs NO magneto-optic
     # gyration (MO is probe-only); it also saves the MO ADE state's GPU memory.
+    psi_T = _cpml_psi_T(Float32)   # pump default Float32 (off the 0-free-VRAM cliff); MP_CPML_PSI=f64 overrides
+    @info "pump CPML ψ storage" psi_T=psi_T
     state = init_state(cfg; model=model, scene=dev, enable_magneto_optic=false,
-                       diag_poles=diag_poles, geo=geo)
+                       diag_poles=diag_poles, geo=geo, cpml_psi_T=psi_T)
     on_init === nothing || on_init(state)
     # The reference records initial_m_* from the as-initialized LUT equilibrium,
     # BEFORE the equilibration dry-run (which the runtime |m| caps then trim).
@@ -474,7 +489,15 @@ function run_probe_shot(cfg, dev, model; label, is_reference=false, magdata=noth
     L = cfg.grid.xlim[2] - cfg.grid.xlim[1]
     pre_x = PROBE_PRE_X <= 0.9L ? PROBE_PRE_X : 0.45L
     post_x = PROBE_POST_X <= 0.9L ? PROBE_POST_X : 0.85L
-    state = init_state(cfg; model=model, scene=dev, enable_magneto_optic=!is_reference, geo=geo)
+    # Probe shots default to Float32 CPML ψ storage: it frees ~0.47 GiB so the per-step
+    # readout DFT/trace buffers stay resident on the 6 GiB card (they otherwise demote to
+    # PCIe at 0 B free). ψ is pure storage (kernels cast to Float64 on read), and this is
+    # the configuration the GOLDSTD probe physics was validated in. Override with
+    # MP_CPML_PSI=f64 to A/B against full-precision ψ. The pump defaults to Float64.
+    psi_T = _cpml_psi_T(Float32)
+    @info "probe CPML ψ storage" label=label psi_T=psi_T
+    state = init_state(cfg; model=model, scene=dev, enable_magneto_optic=!is_reference,
+                       geo=geo, cpml_psi_T=psi_T)
     on_init === nothing || on_init(state)
     if mag_source_h5 !== nothing
         apply_magnetization!(state, load_production_magnetization(mag_source_h5; state=state))
@@ -727,6 +750,31 @@ function run_spotcheck()
     println("initial m: m_TM_x=", res.initial_m_TM_x, "  m_RE_x=", res.initial_m_RE_x)
 end
 
+# GPU probe PERFORMANCE test: ONE 532 nm readout shot for a bounded step count
+# (default 6000; override PROBE_SPEED_STEPS) with the per-kernel/step profiler ON and
+# NO HDF5 output — no frozen-magnetization reload, no frame streaming (frame_target=0).
+# Mirrors examples/perf_test_pump.jl so the probe readout cost is directly comparable to
+# the pump. The magnetization is the as-initialized equilibrium: physics is irrelevant
+# here (we don't normalize against a reference shot or write anything), and the readout
+# monitor runs the identical per-step DFT + every-10 trace reduction regardless, so the
+# step_s / readout_s split is representative of the real GOLDSTD probe.
+function run_probespeed()
+    get(ENV, "PROBE_PROFILE_KERNELS", "0") == "1" &&
+        @info "PROBE_PROFILE_KERNELS=1 — probe per-group/per-kernel profiling enabled"
+    ensure_cuda()
+    model = MagnetoOpticModel(preset=:gdfeco)
+    dev = production_device(; model=model, lambda=PROBE_LAMBDA)
+    cfg = tier_config("probe"; backend_device=:cuda)
+    geo_probe = reference_geometry(cfg, PROBE_LAMBDA)
+    steps = parse(Int, get(ENV, "PROBE_SPEED_STEPS", "6000"))
+    @info "probe perf test: bounded readout, profiled, NO HDF5" steps=steps
+    shot, st = run_probe_shot(cfg, dev, model; label="speedtest", is_reference=false,
+        steps=steps, frame_target=0, use_reference_source=true, geo=geo_probe,
+        nan_guard=NaNGuard(5000), log_every=1000, on_init=log_cuda_memory_after_init)
+    @info "probe perf test complete" steps=steps T=shot.T R=shot.R A=shot.A
+    MagnetoPhotonic.free_state!(st)
+end
+
 if TIER == "smoke"
     run_smoke()
 elseif TIER == "calibrate"
@@ -737,6 +785,8 @@ elseif TIER == "probe"
     run_probe()
 elseif TIER == "spotcheck"
     run_spotcheck()
+elseif TIER == "probespeed"
+    run_probespeed()
 else
-    error("unknown tier $TIER; expected smoke, calibrate, production, probe, or spotcheck")
+    error("unknown tier $TIER; expected smoke, calibrate, production, probe, spotcheck, or probespeed")
 end

@@ -44,10 +44,12 @@ mutable struct ProbeReadout <: AbstractMonitor
     # per-cell signed forward flux (Ey·Hz − Ez·Hy), time-integrated (× dt)
     energy_pre::Any
     energy_post::Any
-    work_Ey_pre::Any
-    work_Ez_pre::Any
-    work_Ey_post::Any
-    work_Ez_post::Any
+    # single (Ny, Nz, 4) plane buffer for the mode-weighted trace samples, collapsed by
+    # one sum(;dims=(1,2)) reduction instead of four separate reduce_sum downloads
+    work_trace::Any
+    # nb-length device scratch for the per-step DFT phase factors (filled on device each
+    # step so the accumulate kernel carries no Float64 trig)
+    phase_dev::Any
     # mode-overlap-weighted scalar traces (for group delay / pulse broadening)
     t_trace::Vector{Float64}
     Ey_pre::Vector{Float64}
@@ -91,6 +93,7 @@ function ProbeReadout(; pre::Real, post::Real, mode=nothing, lambda0::Real=532e-
            Float64.(collect(omega_bins))
     center = argmin(abs.(bins .- omega_probe))
     empty3 = Array{ComplexF64}(undef, 0, 0, 0)
+    empty3f = Array{Float64}(undef, 0, 0, 0)
     empty2 = Matrix{Float64}(undef, 0, 0)
     plan = Int.(collect(frame_indices))
     skip = Int(frame_skip)
@@ -104,7 +107,7 @@ function ProbeReadout(; pre::Real, post::Real, mode=nothing, lambda0::Real=532e-
                         CPUBackend(), Float64[], copy(empty2), copy(empty2),
                         copy(empty3), copy(empty3), copy(empty3), copy(empty3),
                         copy(empty3), copy(empty3), copy(empty3), copy(empty3),
-                        copy(empty2), copy(empty2), copy(empty2), copy(empty2), copy(empty2), copy(empty2),
+                        copy(empty2), copy(empty2), copy(empty3f), ComplexF64[],
                         Float64[], Float64[], Float64[], Float64[], Float64[],
                         Int[], Float64[], Any[], Any[], Any[], Any[], Any[], Any[],
                         plan, 1, Float64(slice_z_position), Int(final_step))
@@ -160,10 +163,8 @@ function _probe_init!(m::ProbeReadout, sim)
     m.dft_Hz_post = zeros_backend(b, ComplexF64, Ny, Nz, nb)
     m.energy_pre = zeros_backend(b, Float64, Ny, Nz)
     m.energy_post = zeros_backend(b, Float64, Ny, Nz)
-    m.work_Ey_pre = zeros_backend(b, Float64, Ny, Nz)
-    m.work_Ez_pre = zeros_backend(b, Float64, Ny, Nz)
-    m.work_Ey_post = zeros_backend(b, Float64, Ny, Nz)
-    m.work_Ez_post = zeros_backend(b, Float64, Ny, Nz)
+    m.work_trace = zeros_backend(b, Float64, Ny, Nz, 4)
+    m.phase_dev = use_device ? zeros_backend(b, ComplexF64, nb) : zeros(ComplexF64, nb)
     m.initialized = true
     return m
 end
@@ -280,18 +281,20 @@ function _record_probe_device!(m::ProbeReadout, sim)
     _ka_probe_dft_accumulate!(m.backend, fields,
                               m.dft_Ey_pre, m.dft_Ez_pre, m.dft_Hy_pre, m.dft_Hz_pre,
                               m.dft_Ey_post, m.dft_Ez_post, m.dft_Hy_post, m.dft_Hz_post,
-                              m.energy_pre, m.energy_post, m.omega_bins_dev,
+                              m.energy_pre, m.energy_post, m.omega_bins_dev, m.phase_dev,
                               ipre, ipost, t, dt)
     if _trace_due(m, sim.n)
-        _ka_probe_trace_plane!(m.backend,
-                               m.work_Ey_pre, m.work_Ez_pre, m.work_Ey_post, m.work_Ez_post,
+        _ka_probe_trace_plane!(m.backend, m.work_trace,
                                fields, m.mode_w_dev, m.area_yz_dev, ipre, ipost)
+        # One fused reduction over the plane → a length-4 result, one device→host copy,
+        # instead of four separate reduce_sum kernels each with a blocking scalar download.
+        s = vec(Array(sum(m.work_trace; dims=(1, 2))))
         inv = 1.0 / m.mode_norm
         push!(m.t_trace, t)
-        push!(m.Ey_pre, reduce_sum(m.work_Ey_pre) * inv)
-        push!(m.Ez_pre, reduce_sum(m.work_Ez_pre) * inv)
-        push!(m.Ey_post, reduce_sum(m.work_Ey_post) * inv)
-        push!(m.Ez_post, reduce_sum(m.work_Ez_post) * inv)
+        push!(m.Ey_pre, s[1] * inv)
+        push!(m.Ez_pre, s[2] * inv)
+        push!(m.Ey_post, s[3] * inv)
+        push!(m.Ez_post, s[4] * inv)
     end
     _record_probe_frame!(m, sim)
     return m

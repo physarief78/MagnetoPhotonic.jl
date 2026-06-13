@@ -187,9 +187,13 @@ end
 
 # `geo` overrides the scene rasterization with a prebuilt geometry (e.g. the
 # verbatim reference staggered raster from not_gate_reference_geometry).
+# `cpml_psi_T` sets the storage precision of the CPML convolution slabs (see build_cpml).
+# Default Float32: it frees ~0.47 GiB so the 6 GiB card clears 0 B free (where WDDM thrashes
+# and all kernels slow), speeding BOTH phases; the math stays Float64 (kernels cast ψ on
+# read). Pass Float64 (or set MP_CPML_PSI=f64) for the full-precision slabs.
 function init_state(cfg::SimConfig; model::AbstractPhysicsModel=MagnetoOpticModel(),
                     scene=nothing, enable_magneto_optic::Bool=true, diag_poles=nothing,
-                    geo=nothing)
+                    geo=nothing, cpml_psi_T::Type=Float32)
     p = FDTDParams(cfg.source.lambda0)
     b = backend(cfg)
     CT = compute_type(cfg)
@@ -209,7 +213,8 @@ function init_state(cfg::SimConfig; model::AbstractPhysicsModel=MagnetoOpticMode
                                  epsr_volume=geo.epsr, backend=b, compute_T=CT,
                                  amplitude_scale=cfg.model.pump_E_scale)
     cpml_kwargs = (order=cfg.pml.order, reflection=cfg.pml.reflection,
-                   kappa_max=cfg.pml.kappa_max, alpha_max=cfg.pml.alpha_max)
+                   kappa_max=cfg.pml.kappa_max, alpha_max=cfg.pml.alpha_max,
+                   psi_T=cpml_psi_T)
     return FDTDState(grid, geo; dt=dt, params=p, backend=b, compute_precision=CT,
                      T=cfg.precision, source=source, n_pml=cfg.pml.cells,
                      cpml_kwargs=cpml_kwargs, model=model, diag_poles=diag_poles,

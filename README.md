@@ -1,35 +1,97 @@
 # MagnetoPhotonic.jl
 
 A Julia package for **magneto-photonic time-domain electromagnetics**: a general,
-MEEP-like **1-D / 2-D / 3-D FDTD** engine coupled to a tunable **magneto-optic**
-material model (three-/four-temperature electron–lattice–spin dynamics + Landau–Lifshitz–Bloch
-magnetization + Kerr/Faraday gyrotropy) for simulating **all-optical magnetization switching**
-in integrated photonic devices.
+Meep-like **1-D / 2-D / 3-D FDTD** engine *coupled* to a tunable, **dynamical magneto-optic**
+material model — four-temperature electron–lattice–spin dynamics + two-sublattice
+Landau–Lifshitz–Bloch magnetization + magnetization-dependent (Kerr/Faraday) gyrotropy — for
+simulating **all-optical magnetization switching** in integrated photonic devices.
 
 ![Julia](https://img.shields.io/badge/julia-%E2%89%A51.12-blue.svg)
 ![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-88%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
+![Backends](https://img.shields.io/badge/backends-CPU%20%7C%20CUDA-blue.svg)
 
 > `MagnetoPhotonic` is an umbrella package for magneto-photonic solvers. It ships an
 > **FDTD** solver today; a **Discontinuous Galerkin Time-Domain (DGTD)** solver is planned.
 
+📖 **Full documentation:** <https://physarief.github.io/MagnetoPhotonic.jl> &nbsp;·&nbsp;
+*Introduction → Fundamentals → Getting Started → Tutorials → Capabilities → API.*
+
 ---
 
-## Features
+## Philosophy & origin
 
-- **General EM-FDTD** in 1-D, 2-D (TM/TE) and 3-D on a non-uniform Yee grid, with a clean
-  `Simulation(...)` API (cell, resolution, geometry, sources, boundary).
-- **CFS-CPML** absorbing boundaries (ψ-convolution) in every dimension, plus `PEC` and `Periodic`.
-- **Materials by refractive index** and **Drude–Lorentz ADE dispersion** in all dimensions.
-- **Sources**: Gaussian-pulse / continuous, point and plane-wave (transverse current sheet).
-- **Monitors**: point probes, field-slice capture, signed plane-integrated **Poynting flux**, DFT.
-- **Magneto-optic stack**: tunable two-sublattice GdFeCo model — 4-temperature thermal bath +
-  LLB magnetization + magneto-optic gyration — driving **deterministic all-optical switching**.
-- **Geometry**: boxes, polygons, (tapered) waveguides, cylinders, letter shapes; a `Scene`
-  builder; OBJ/SVG device export.
-- **88 passing tests** on Julia 1.12 (CPU). CUDA / HDF5 / Makie are optional extensions.
+This package grew out of an undergraduate physics thesis at **Universitas Padjadjaran (UNPAD)** —
+*“a first-principles feasibility assessment of a compact all-photon NOT gate that writes a bit
+through thermally-driven helicity-independent all-optical switching (AO-HIS) in a GdFeCo film and
+reads it through a guided magneto-optical probe, on a fabrication-light silicon-nitride
+(Si₃N₄) platform.”*
 
-## Installation
+That study could not be done with an off-the-shelf electromagnetic solver. Established FDTD
+packages (Meep, commercial tools) treat magneto-optics as a **static** input — you fix a
+magnetization or bias field and they compute the Faraday/Kerr response of that frozen state.
+All-optical switching is the opposite problem: the magnetization is a **dynamical unknown** that
+*reverses* because the guided pulse heats the film through its Curie point. Capturing that needs
+the electromagnetic field, the absorbed-power → temperature path, and the magnetization to evolve
+**self-consistently, in one time loop**.
+
+So the thesis built that loop *from scratch in Julia*, on a consumer GPU, “to ensure full
+transparency and control over all numerical assumptions.” **MagnetoPhotonic.jl is that solver,
+generalized** — refactored from a single-purpose research script into a modular, tested,
+backend-portable library, while reproducing the thesis’s production results to ~0.1 %.
+
+The design principles inherited from the thesis:
+
+1. **Transparency over black-box.** Every kernel — Yee leap-frog, CFS-CPML, Drude–Lorentz ADE,
+   4-temperature bath, LLB, gyrotropic coupling — is readable Julia you can audit and modify.
+2. **Coupled multiphysics as a first-class citizen,** not a post-processing add-on.
+3. **Runs on accessible hardware.** The reference results were produced on a 6 GB consumer
+   GeForce RTX 3050; the GPU path is tuned to fit and run there.
+4. **Internally validated.** A Cauchy grid-refinement convergence study, a CPU test suite, and a
+   bit-level comparison against the production CUDA reference.
+
+## Relationship to Meep
+
+The **electromagnetic core is deliberately Meep-like**, so if you have used [Meep](https://meep.readthedocs.io/)
+the mental model carries over: a Yee-grid FDTD `Simulation` you build from a cell, a resolution,
+geometry, sources and a boundary, then `run!`; PML/CPML absorbers; dispersive media; sources; and
+flux/DFT monitors.
+
+**What is the same**
+
+| Capability | Meep | MagnetoPhotonic.jl |
+|---|---|---|
+| Yee-grid FDTD, 1-D/2-D/3-D | ✅ | ✅ (non-uniform grid) |
+| PML / CPML absorbing boundaries | ✅ | ✅ (CFS-CPML, ψ-convolution) |
+| Dispersive materials | ✅ (Lorentz/Drude) | ✅ (Drude–Lorentz ADE) |
+| Sources, flux & DFT monitors | ✅ | ✅ |
+| Subpixel permittivity averaging | ✅ | ✅ |
+
+**What is different — the reason this package exists**
+
+| | Meep | MagnetoPhotonic.jl |
+|---|---|---|
+| Magnetization | **static** input (fixed bias / saturated gyrotropy) | **dynamical** field, evolved by 4TM + LLB |
+| Thermal model | none | 4-temperature (electron / lattice / TM-spin / RE-spin) |
+| All-optical switching | not modelable | **the headline use case** |
+| Read-out | manual | built-in pump–probe + polarimetric T/R/A, Faraday/Kerr |
+| Language / stack | C++ core, Python/Scheme front-end | pure **Julia** |
+| GPU | MPI/CPU clusters | **GPU-native** (KernelAbstractions + native CUDA fast path) |
+
+**Advantages.** It models the *write* step, not just the *read* (the gyrotropic permittivity is
+recomputed every step from the *current* magnetization, which the pump can reverse); it is a
+single inspectable Julia stack; it is GPU-native on a laptop-class card; and it is reproducible
+and validated end-to-end against a CUDA production reference.
+
+**Where Meep is still ahead — honestly.** Meep is far more mature, with adjoint/inverse design,
+eigenmode decomposition, near-to-far transforms, cylindrical coordinates, large-scale MPI, and a
+big material library and community. MagnetoPhotonic.jl is a young (v0.1), focused, single-node
+solver specialized for **coupled magneto-optic switching**. Use Meep for general nanophotonics;
+use this when the magnetization must *evolve*.
+
+---
+
+## Get started
 
 The package targets **Julia ≥ 1.12**. From the repository root:
 
@@ -38,21 +100,14 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-To use it from your own scripts, `Pkg.develop` the local path (or `Pkg.add` the Git URL once published):
+Use it from your own code (`Pkg.add` the Git URL once published):
 
 ```julia
 using Pkg; Pkg.develop(path="path/to/MagnetoPhotonic.jl")
 using MagnetoPhotonic
 ```
 
----
-
-## Quick start: general EM-FDTD
-
-A `Simulation` is built from a cell size, a resolution (`dx`), some `sources`, and a
-`boundary`. `run!` advances it and records any `monitors`.
-
-### 1-D — Gaussian pulse into a CPML boundary
+A minimal run — a Gaussian pulse launched into a 1-D domain and absorbed by a CPML boundary:
 
 ```julia
 using MagnetoPhotonic
@@ -60,154 +115,77 @@ p = FDTDParams()
 pulse = GaussianPulse(; amplitude=1.0, tau=4e-15, t0=16e-15, omega=2pi*p.c0/800e-9)
 
 sim = Simulation(; cell=(4e-6,), dx=10e-9, dimension=1,
-                 sources=[PointSource(pulse, :Ez, 2e-6)], boundary=PML(20), courant=0.5)
+                 sources=[PointSource(pulse, :Ez, 2e-6)], boundary=PML(20))
 mon = PointMonitor(:Ez, 3e-6)
-run!(sim; until=120e-15, monitors=[mon])
+run!(sim; until=120e-15, monitors=[mon])      # peak |Ez| @ probe ≈ 1.942
 ```
 
-```text
-steps=14390   peak |Ez| @ probe = 1.942   energy final/peak = 3.58e-22
-```
+GPU execution is opt-in: `using CUDA` loads the CUDA backend extension. Nothing GPU-related is
+required to install, run, or test the CPU path.
 
-The pulse propagates at `c`, passes the probe, and is absorbed by the CPML — the residual
-domain energy drops to ~`1e-22` of its peak.
+### What you can compute (at a glance)
 
-### 2-D — point source and single-slit diffraction
-
-A `GaussianPulse` (a sine wave under a Gaussian envelope) driving one central cell radiates
-cylindrical wavefronts; a plane wave hitting an opaque (PEC) wall with a sub-wavelength slit
-diffracts into Huygens semicircles. Both are runnable: `examples/point_source_2d.jl` and
-`examples/slit_diffraction_2d.jl`.
-
-```julia
-# point source in the middle of the domain
-pw  = GaussianPulse(; amplitude=1.0, tau=20e-15, t0=30e-15, omega=2pi*p.c0/700e-9)
-sim = Simulation(; cell=((0.0,4e-6),(0.0,4e-6)), dx=20e-9, dimension=2, mode=:TM,
-                 sources=[PointSource(pw, :Ez, (2e-6, 2e-6))], boundary=PML(10), courant=0.45)
-run!(sim, 1300)
-```
-
-![Point source — sine×Gaussian wavepacket radiating from center](docs/src/assets/pointsource.svg)
-
-![Single-slit diffraction — plane wave through a PEC wall](docs/src/assets/slit.svg)
-
-Use `mode=:TM` for `(Ez, Hx, Hy)` or `mode=:TE` for `(Hz, Ex, Ey)`.
-
-### 3-D — point source, CPML absorption
-
-```julia
-sp = GaussianPulse(; amplitude=1.0, tau=2e-15, t0=8e-15, omega=2pi*p.c0/800e-9)
-sim = Simulation(; cell=(1e-6, 1e-6, 1e-6), dx=40e-9, dimension=3,
-                 sources=[PointSource(sp, :Ez, (0.5e-6, 0.5e-6, 0.5e-6))],
-                 boundary=PML(8), courant=0.35)
-run!(sim, 4000)
-```
-
-```text
-grid = (25, 25, 25)   energy final/peak = 8.9e-10   # 3-D CPML absorbs to ~1e-9
-```
-
----
-
-## Materials and geometry
-
-Add shapes (with a material) to a `Scene`. Materials can be given by refractive index, or
-by Drude–Lorentz `poles` for dispersion:
-
-```julia
-scene = Scene()
-add_shape!(scene, Box(1e-6, 2e-6, -1, 1, -1, 1), Material("n=2 slab"; index=2.0))
-sim = Simulation(; cell=(3e-6,), dx=5e-9, dimension=1, geometry=scene,
-                 sources=[PointSource(pulse, :Ez, 0.4e-6)], boundary=PML(20))
-```
-
-Shape primitives: `Box`, `PolygonShape`, `Waveguide`, `TaperedWaveguide`, `Cylinder`,
-`Letter`. A small device library is included (`not_gate_60um`, `passive_waveguide`,
-`hm_test_pattern`), with OBJ/SVG export via `write_device_obj` / `write_plan_svg`.
-
-![NOT-gate waveguide device — 2-D plan view](docs/src/assets/device.svg)
-
-## Monitors
-
-| Monitor | Records |
+| Area | Capability |
 |---|---|
-| `PointMonitor(component, pos)` | interpolated field time-trace at a physical point |
-| `FieldMonitor(component; every=n)` | field slices for animation |
-| `FluxMonitor(axis, pos)` | signed, plane-integrated Poynting flux through a normal plane |
-| `DFTMonitor(component, pos)` | trace + on-demand `compute_spectrum` |
+| **Dimensions** | 1-D, 2-D (`:TM` / `:TE`), 3-D on a non-uniform Yee grid |
+| **Boundaries** | `PML` / CFS-CPML (ψ-convolution), `PEC`, `Periodic` |
+| **Materials** | by refractive index, or Drude–Lorentz **ADE** dispersion (all dimensions) |
+| **Sources** | Gaussian-pulse / continuous; point, plane-wave, guided **mode** |
+| **Monitors** | point probe, field-slice, signed **Poynting flux**, **DFT**, polarimetric **pump–probe** (T/R/A, Faraday/Kerr) |
+| **Magneto-optics** | tunable two-sublattice GdFeCo: 4-temperature bath + **LLB** + dynamical gyrotropy → **all-optical switching** |
+| **Geometry** | boxes, polygons, (tapered) waveguides, cylinders, letters; `Scene` builder; OBJ/SVG export; a device library |
+| **Backends** | CPU and CUDA via KernelAbstractions, with a native `@cuda` Maxwell fast path |
+| **I/O & viz** | HDF5 schema I/O, field video, device views (optional extensions) |
+
+> For everything beyond the snippet above — the physics, step-by-step tutorials, the full
+> capability matrix, and the API — read the **[documentation](https://physarief.github.io/MagnetoPhotonic.jl)**.
 
 ---
 
-## Validation
+## The marquee: all-optical magnetization switching
 
-**Second-order accuracy.** Propagating a smooth Gaussian field (no source) and comparing to
-the exact translate gives the expected O(Δx²) Yee convergence:
+An ultrafast laser pulse deposits heat in a GdFeCo film, and the coupled **4-temperature + LLB**
+dynamics deterministically reverse both magnetic sublattices. Because the FeCo (TM) and Gd (RE)
+spin baths demagnetize on different timescales (≈100 fs vs ≈430 fs), **FeCo reverses first
+(~0.9 ps) and Gd follows (~1.5 ps)**, opening a transient-ferromagnetic window.
 
-```text
-dx (nm) = [40, 20, 10]
-L2 err  = [0.0141, 0.00353, 0.000883]
-orders  = (2.00, 2.00)
-```
-
-![Grid convergence — measured L2 vs. O(Δx²) reference](docs/src/assets/convergence.svg)
-
-**Dispersion.** A Drude–Lorentz slab driven at 800 nm reproduces the correct transmitted
-spectral peak:
-
-```julia
-cv = convergence_study(; dimension=2, mode=:TM, dispersive=true, pml=true,
-                       dxs=(50e-9, 35e-9), L=1e-6, T_max=90e-15)
-cv.spectrum.freq[argmax(cv.spectrum.amplitude)] / 1e12   # → 377.8  (THz; 800 nm ≈ 375 THz)
-```
-
-The `studies/` folder reproduces the lab's `Convergence_study` (free-space / PML / dielectric /
-dispersive, in 1-D, 2-D and 3-D):
+![All-optical switching — asymmetric FeCo-first / Gd-delayed reversal + 4TM reservoirs](docs/src/assets/switching.svg)
 
 ```text
-julia --project=. studies/conv_wave_in_a_box.jl
-julia --project=. studies/conv_wave_with_pml.jl
-julia --project=. studies/conv_3d.jl
-```
-
----
-
-## Magneto-optic all-optical switching
-
-The headline application: an ultrafast laser pulse deposits heat in a GdFeCo film, and the
-coupled **4-temperature + LLB** dynamics deterministically reverse both magnetic sublattices.
-The model is fully tunable — every GdFeCo parameter is a keyword on `MagnetoOpticModel`.
-
-```julia
-using MagnetoPhotonic
-config = SimConfig(
-    grid   = GridConfig(xlim=(0.0,1.5e-6), ylim=(-0.4e-6,0.4e-6), zlim=(-0.4e-6,0.4e-6),
-                        dx=0.1e-6, courant=0.3),
-    source = SourceConfig(component=:Ez, amplitude=1e2, tau=15e-15, t0=45e-15),
-    device = DeviceConfig(wg_width=0.3e-6, wg_height=0.3e-6, film_thickness=0.2e-6),
-    model  = ModelConfig(multiphysics_subcycle=4),
-    steps  = 150, precision = Float64,
-)
-model = MagnetoOpticModel()           # or e.g. MagnetoOpticModel(; T_Curie=560.0, Q_voigt_TM=0.025)
-res = run_pump_probe_sim(config; model=model, thermal_kick=1150.0, relax_steps=8000)
-```
-
-```text
-material cells     = 32
 mean m_TM_x (FeCo) :  1.000  ->  -0.990     # FeCo reversed
 mean m_RE_x (Gd)   : -0.998  ->   0.968     # Gd reversed
 switched fraction  = 1.0                    # complete, deterministic switch
 ```
 
-The figure below comes from the 0-D driver `examples/aos_switching_0d.jl`, which heats a
-single GdFeCo cell through the 4TM. Because the FeCo (TM) and Gd (RE) spin baths demagnetize
-on different timescales (≈100 fs vs ≈430 fs), **FeCo reverses first (~0.9 ps) and Gd follows
-(~1.5 ps)** — opening the shaded transient-ferromagnetic window. The lower panel is the
-four-temperature reservoir evolution (electron `T_e` peaking ≈2400 K).
+The full pump → relax → probe pipeline (Yee + CPML + ADE + magneto-optic gyration + 4TM + LLB)
+reproduces the production CUDA reference to ~0.1 % (switch fraction 0.7823 vs 0.7831, Faraday
+contrast 1.684° vs 1.690°). See the **[Magneto-Optic Switching tutorial](https://physarief.github.io/MagnetoPhotonic.jl)**
+for how to drive it.
 
-![All-optical switching — asymmetric FeCo-first / Gd-delayed reversal + 4TM reservoirs](docs/src/assets/switching.svg)
+---
 
-A fully-coupled FDTD path (Yee + CPML + ADE + magneto-optic gyration + 4TM + LLB) is also
-available directly through `FDTDState` / `step!` / `relax_step!` for custom geometries.
+## Documentation
+
+The full site (built with [Documenter.jl](https://documenter.juliadocs.org/)) is published at
+**<https://physarief.github.io/MagnetoPhotonic.jl>** and organized as:
+
+| Section | Contents |
+|---|---|
+| **Introduction** | motivation, thesis origin, where it sits next to Meep |
+| **Fundamentals** | the physics & numerics: Yee FDTD, CPML, ADE dispersion, 4TM, LLB, gyrotropy, units & precision |
+| **Getting Started** | install, the `Simulation` anatomy, your first run |
+| **Tutorials** | worked EM-FDTD (1-D/2-D/3-D) and magneto-optic switching examples |
+| **Capabilities** | the full capability matrix, backends/GPU, performance, validation |
+| **API Reference** | the complete public surface |
+
+Build it locally:
+
+```julia
+julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+julia --project=docs docs/make.jl          # output in docs/build/index.html
+```
+
+On push to `main`, the `Documentation` GitHub Action builds and deploys the site to GitHub Pages.
 
 ---
 
@@ -215,38 +193,48 @@ available directly through `FDTDState` / `step!` / `relax_step!` for custom geom
 
 ```
 src/
-  core/        constants, config structs, materials, backend
-  geometry/    Vec2, shapes, rasterizers (1D/2D/3D), Scene, device library
+  core/        constants, config structs, materials, backend, precision
+  geometry/    Vec2, shapes, rasterizers (1D/2D/3D), Scene, device + reference geometry
   grid/        Axis1D, Grid1D/2D/3D, uniform/graded/propagation axes, CFL
-  fdtd/        Fields, Maxwell (1D/2D/3D Yee), CPML, Boundary, Source, Dispersion, MagnetoOptic, Solver
+  fdtd/        Fields, Maxwell (1D/2D/3D Yee), CPML, Boundary, Source, ModeSolver,
+               Dispersion, MagnetoOptic, Kernels (KernelAbstractions), Solver
   physics/     Models (GdFeCo), Thermal (4TM), Magnetization (LLB), Coupling, Polarimetry
-  sim/         Simulation, Run, Monitors            # the general MEEP-like layer
+  sim/         Simulation, Run, Monitors, ProbeReadout, Experiment   # the Meep-like layer
   viz/         device views, field video, diagnostics
-  drivers/     run_pump_probe_sim, convergence_study
-ext/           CUDA / HDF5 / Makie / KernelAbstractions extensions (optional)
-studies/       convergence-study replications
-examples/      runnable 1D/2D/3D + device + pump-probe scripts
-docs/          Documenter site (see below)
+  io/          HDF5 schema I/O
+  drivers/     run_pump_probe_sim, convergence_study, presets
+ext/           CUDA / HDF5 / CairoMakie extensions (optional weak deps)
+examples/      runnable 1D/2D/3D + device + pump-probe + perf-test scripts
+docs/          Documenter site
+test/          CPU test suite
 ```
-
-## Documentation
-
-The full documentation (build with [Documenter.jl](https://documenter.juliadocs.org/)) lives in `docs/`:
-
-```julia
-julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
-julia --project=docs docs/make.jl          # output in docs/build/index.html
-```
-
-Pages: *Getting Started*, *EM-FDTD Tutorial*, *Magneto-Optic Switching*, *API Reference*.
 
 ## Status and roadmap
 
-- **Compute is CPU** and is what the test suite validates. CUDA / HDF5 / CairoMakie are
-  optional weak-dependency extensions (device arrays, HDF5 I/O, plotting/video).
-- **Planned**: a DGTD solver under the same umbrella; porting the FDTD kernels to
-  KernelAbstractions for GPU execution; full quantitative validation against the lab's
-  production CUDA reference at device scale.
+- **GPU is implemented and validated.** All kernels run on CPU or CUDA via KernelAbstractions;
+  the two Maxwell kernels have a native `@cuda` fast path. The full pump → relax → probe pipeline
+  reproduces the production CUDA reference to ~0.1 %.
+- **AMD / other GPUs**: the kernels are backend-agnostic; adding an `AMDGPUBackend` is a small
+  extension (a backend struct + a ~40-line AMDGPU extension mirroring the CUDA one).
+- **CPU is the test-suite baseline.** CUDA / HDF5 / CairoMakie are optional weak-dependency
+  extensions (device arrays, HDF5 I/O, plotting/video).
+- **Planned**: a DGTD solver under the same umbrella; per-section mixed precision; broader
+  device/material libraries.
+
+## Citing
+
+If you use MagnetoPhotonic.jl in academic work, please cite the thesis it originates from:
+
+```bibtex
+@thesis{Mulyana2026MagnetoPhotonic,
+  author = {Muhammad Arief Mulyana},
+  title  = {Feasibility of a Magneto-Optical All-Photon NOT Gate via
+            Helicity-Independent All-Optical Switching: A First-Principles
+            Multiphysics FDTD Study},
+  school = {Universitas Padjadjaran},
+  year   = {2026}
+}
+```
 
 ## License
 

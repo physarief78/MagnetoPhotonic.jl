@@ -12,6 +12,12 @@
 #                100 fs ≈ 8,900 steps ≈ 9 profile blocks; 250 fs (the regression
 #                default) additionally makes the Te@237fs physics check meaningful.
 #
+# CPML ψ storage precision (A/B): defaults to Float32 ψ (the validated peak config — it
+# clears the 6 GiB card off 0-free-VRAM). To time the Float64-ψ variant, set the env var:
+#     $env:MP_CPML_PSI = "f64"   # then run; unset (or "f32") for the default
+# The "pump CPML ψ storage" log line and the post-init pool usage (≈4.80 GiB f32 vs
+# ≈5.25 GiB f64) confirm which ran.
+#
 # What to read in the output, every 1000 steps:
 #   [step-profile] bucket table — compare H/E against the reference baseline
 #                  (H 37.5 / E 49.4 ms per step, profiled).

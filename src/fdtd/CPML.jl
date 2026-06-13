@@ -150,8 +150,28 @@ Adapt.@adapt_structure CPMLState
 
 _cpml_width(N::Integer, np::Integer) = (np > 0 && N >= 2 * np + 1) ? Int(np) : 0
 
+# `T` sets the precision of the per-axis coefficient vectors (inv_kappa/a/b), which
+# feed the EM update and stay Float64 on the production path. `psi_T` sets the storage
+# precision of the 24 convolution-memory SLABS, the largest CPML allocation: on the
+# 4099x190x100 reference grid (PML 40/12/12) they total ~0.94 GiB in Float64 (the
+# Nx×Ny×wz z-slabs alone are ~75 MB each × 8), halving to ~0.47 GiB in Float32.
+#
+# DEFAULT IS Float32 — settled by a controlled back-to-back A/B 2026-06-13. ψ is pure
+# storage (every kernel casts to Float64 on read and writes the Float64 result back), so
+# Float32 ψ leaves the convolution math in Float64 and is reference-faithful (the
+# reference stores ψ in Float32). On the 6 GiB card the win is decisive: Float64 ψ pushes
+# device memory to EXACTLY 0 B free, where the Windows WDDM driver thrashes residency and
+# every kernel slows; Float32 ψ frees ~0.47 GiB (slabs 0.94→0.47), tipping the card off
+# that cliff. Measured same-session: pump H 41.5→39.0 / E 62.0→55.6 ms (~104→96 s/1000),
+# and the probe readout collapses 56→2 ms/step (its ComplexF64 DFT buffers go from
+# demoted-to-PCIe back to resident). An earlier "Float32 is ~4 ms slower for the pump"
+# note was a THERMAL confound across separate sessions — the controlled A/B reversed it.
+# Pump spotcheck physics was bit-identical between Float32 and Float64 ψ. Override per run
+# with the MP_CPML_PSI=f32|f64 env var (see _cpml_psi_T in examples/replicate_production.jl);
+# pass `psi_T=Float64` here for the full-precision slabs.
 function build_cpml(grid::Grid3D, n_pml, dt::Real, p::FDTDParams=FDTDParams();
-                    backend::AbstractBackend=CPUBackend(), T::Type=Float64, kwargs...)
+                    backend::AbstractBackend=CPUBackend(), T::Type=Float64,
+                    psi_T::Type=Float32, kwargs...)
     npx, npy, npz = n_pml isa Integer ? (n_pml, n_pml, n_pml) : (n_pml[1], n_pml[2], n_pml[3])
     ax = _cpml_axis(grid.x.edges, npx, Float64(dt), p; backend=backend, T=T, kwargs...)
     ay = _cpml_axis(grid.y.edges, npy, Float64(dt), p; backend=backend, T=T, kwargs...)
@@ -160,9 +180,9 @@ function build_cpml(grid::Grid3D, n_pml, dt::Real, p::FDTDParams=FDTDParams();
     wx = _cpml_width(Nx, npx)
     wy = _cpml_width(Ny, npy)
     wz = _cpml_width(Nz, npz)
-    sx() = zeros_backend(backend, T, wx, Ny, Nz)
-    sy() = zeros_backend(backend, T, Nx, wy, Nz)
-    sz() = zeros_backend(backend, T, Nx, Ny, wz)
+    sx() = zeros_backend(backend, psi_T, wx, Ny, Nz)
+    sy() = zeros_backend(backend, psi_T, Nx, wy, Nz)
+    sz() = zeros_backend(backend, psi_T, Nx, Ny, wz)
     return CPMLState(ax, ay, az, Int32(wx), Int32(wy), Int32(wz),
         sy(), sy(), sz(), sz(), sz(), sz(), sx(), sx(), sx(), sx(), sy(), sy(),
         sy(), sy(), sz(), sz(), sz(), sz(), sx(), sx(), sx(), sx(), sy(), sy())
