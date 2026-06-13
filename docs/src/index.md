@@ -40,22 +40,16 @@ Depth = 2
 
 ## Installation
 
-The package targets **Julia ≥ 1.12**.
+The package targets **Julia ≥ 1.12** and is **not yet registered**, so install it from GitHub:
 
 ```julia
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using Pkg; Pkg.test()'
-```
-
-From your own code:
-
-```julia
-using Pkg; Pkg.develop(path="path/to/MagnetoPhotonic.jl")
+using Pkg
+Pkg.add(url="https://github.com/physarief78/MagnetoPhotonic.jl")
 using MagnetoPhotonic
 ```
 
-GPU execution is opt-in (`using CUDA`); nothing GPU-related is needed to install, run, or test
-the CPU path.
+GPU, HDF5 I/O, and plotting are optional extensions — `Pkg.add("CUDA")` / `Pkg.add("HDF5")` /
+`Pkg.add("CairoMakie")` and they load automatically. See [Getting Started](@ref) for details.
 
 ## A 30-second example
 

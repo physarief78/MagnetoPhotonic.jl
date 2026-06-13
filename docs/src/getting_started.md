@@ -2,17 +2,47 @@
 
 ## Installation
 
-`MagnetoPhotonic` targets **Julia ≥ 1.12**. From the repository root:
+`MagnetoPhotonic` targets **Julia ≥ 1.12**. It is **not yet in the General registry**, so install
+it directly from the GitHub repository:
 
 ```julia
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using Pkg; Pkg.test()'      # CPU test suite
+using Pkg
+Pkg.add(url="https://github.com/physarief78/MagnetoPhotonic.jl")
 ```
 
-The CPU path is the test-suite baseline and needs no extra dependencies. GPU execution is
-opt-in: `using CUDA` loads the CUDA backend extension. `HDF5` and `CairoMakie` are likewise
-*optional* weak dependencies (HDF5 I/O, plotting/video). See [Capabilities](@ref) for the
-backend and precision details.
+or, equivalently, from the Pkg REPL (press `]`):
+
+```
+pkg> add https://github.com/physarief78/MagnetoPhotonic.jl
+```
+
+Then load it:
+
+```julia
+using MagnetoPhotonic
+```
+
+### Optional extensions
+
+The CPU path needs nothing else. GPU execution, HDF5 I/O, and plotting are **optional weak
+dependencies** loaded as package extensions — add the one you want and it activates automatically:
+
+```julia
+Pkg.add("CUDA")        # CUDA GPU backend
+Pkg.add("HDF5")        # HDF5 schema I/O
+Pkg.add("CairoMakie")  # figures / field video
+```
+
+See [Capabilities](@ref) for the backend and precision details.
+
+### Developing the package
+
+To hack on the package or run its test suite, clone it and use its own project:
+
+```julia
+# git clone https://github.com/physarief78/MagnetoPhotonic.jl
+julia --project=MagnetoPhotonic.jl -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+```
 
 ## Anatomy of a `Simulation`
 

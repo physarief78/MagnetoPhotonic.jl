@@ -93,18 +93,33 @@ use this when the magnetization must *evolve*.
 
 ## Get started
 
-The package targets **Julia ≥ 1.12**. From the repository root:
+The package targets **Julia ≥ 1.12**. It is **not yet in the General registry**, so install it
+straight from the GitHub repository:
 
 ```julia
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using Pkg; Pkg.test()'
+using Pkg
+Pkg.add(url="https://github.com/physarief78/MagnetoPhotonic.jl")
 ```
 
-Use it from your own code (`Pkg.add` the Git URL once published):
+or, equivalently, from the Pkg REPL (press `]`):
+
+```
+pkg> add https://github.com/physarief78/MagnetoPhotonic.jl
+```
+
+Then load it:
 
 ```julia
-using Pkg; Pkg.develop(path="path/to/MagnetoPhotonic.jl")
 using MagnetoPhotonic
+```
+
+The CPU path needs nothing else. GPU, HDF5 I/O, and plotting are **optional extensions** — add the
+package you want and the corresponding extension loads automatically:
+
+```julia
+Pkg.add("CUDA")        # CUDA GPU backend
+Pkg.add("HDF5")        # HDF5 schema I/O
+Pkg.add("CairoMakie")  # figures / field video
 ```
 
 A minimal run — a Gaussian pulse launched into a 1-D domain and absorbed by a CPML boundary:
@@ -120,8 +135,11 @@ mon = PointMonitor(:Ez, 3e-6)
 run!(sim; until=120e-15, monitors=[mon])      # peak |Ez| @ probe ≈ 1.942
 ```
 
-GPU execution is opt-in: `using CUDA` loads the CUDA backend extension. Nothing GPU-related is
-required to install, run, or test the CPU path.
+> **Working on the package itself?** Clone it and use its own project to run the test suite:
+> ```
+> git clone https://github.com/physarief78/MagnetoPhotonic.jl
+> julia --project=MagnetoPhotonic.jl -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+> ```
 
 ### What you can compute (at a glance)
 
