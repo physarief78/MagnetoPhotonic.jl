@@ -1,15 +1,15 @@
 using Documenter
 
 # ┌──────────────────────────────────────────────────────────────────────────┐
-# │ BEFORE YOU PUSH: verify the GitHub username/repo in the three places       │
-# │ marked "VERIFY" below. It is set to "physarief" (from the author's email   │
-# │ handle); change it if your GitHub account or repo name differs. The        │
-# │ Documentation GitHub Action then deploys to                                │
-# │   https://<USER>.github.io/MagnetoPhotonic.jl                              │
-# │ (you must also add a DOCUMENTER_KEY deploy secret — see the README).       │
+# │ The Documentation GitHub Action deploys the built site to                  │
+# │   https://physarief78.github.io/MagnetoPhotonic.jl                         │
+# │ via the gh-pages branch. For that to work the repo needs EITHER            │
+# │ "Read and write" workflow permissions (Settings → Actions → General) so    │
+# │ the default GITHUB_TOKEN can push gh-pages, OR a DOCUMENTER_KEY deploy      │
+# │ secret (see the README). GH_USER/GH_REPO must match the actual repo.       │
 # └──────────────────────────────────────────────────────────────────────────┘
-const GH_USER = "physarief"          # VERIFY: your GitHub username
-const GH_REPO = "MagnetoPhotonic.jl" # VERIFY: your repository name
+const GH_USER = "physarief78"        # GitHub username (repo owner)
+const GH_REPO = "MagnetoPhotonic.jl" # repository name
 
 makedocs(
     sitename = "MagnetoPhotonic.jl",

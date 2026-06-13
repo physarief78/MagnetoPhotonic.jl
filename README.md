@@ -14,7 +14,7 @@ simulating **all-optical magnetization switching** in integrated photonic device
 > `MagnetoPhotonic` is an umbrella package for magneto-photonic solvers. It ships an
 > **FDTD** solver today; a **Discontinuous Galerkin Time-Domain (DGTD)** solver is planned.
 
-📖 **Full documentation:** <https://physarief.github.io/MagnetoPhotonic.jl> &nbsp;·&nbsp;
+📖 **Full documentation:** <https://physarief78.github.io/MagnetoPhotonic.jl> &nbsp;·&nbsp;
 *Introduction → Fundamentals → Getting Started → Tutorials → Capabilities → API.*
 
 ---
@@ -138,7 +138,7 @@ required to install, run, or test the CPU path.
 | **I/O & viz** | HDF5 schema I/O, field video, device views (optional extensions) |
 
 > For everything beyond the snippet above — the physics, step-by-step tutorials, the full
-> capability matrix, and the API — read the **[documentation](https://physarief.github.io/MagnetoPhotonic.jl)**.
+> capability matrix, and the API — read the **[documentation](https://physarief78.github.io/MagnetoPhotonic.jl)**.
 
 ---
 
@@ -159,7 +159,7 @@ switched fraction  = 1.0                    # complete, deterministic switch
 
 The full pump → relax → probe pipeline (Yee + CPML + ADE + magneto-optic gyration + 4TM + LLB)
 reproduces the production CUDA reference to ~0.1 % (switch fraction 0.7823 vs 0.7831, Faraday
-contrast 1.684° vs 1.690°). See the **[Magneto-Optic Switching tutorial](https://physarief.github.io/MagnetoPhotonic.jl)**
+contrast 1.684° vs 1.690°). See the **[Magneto-Optic Switching tutorial](https://physarief78.github.io/MagnetoPhotonic.jl)**
 for how to drive it.
 
 ---
@@ -167,7 +167,7 @@ for how to drive it.
 ## Documentation
 
 The full site (built with [Documenter.jl](https://documenter.juliadocs.org/)) is published at
-**<https://physarief.github.io/MagnetoPhotonic.jl>** and organized as:
+**<https://physarief78.github.io/MagnetoPhotonic.jl>** and organized as:
 
 | Section | Contents |
 |---|---|
