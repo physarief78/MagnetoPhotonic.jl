@@ -66,6 +66,9 @@ end
     geo = rasterize(scene, grid; subpixel=1)
     p = FDTDParams()
     state = FDTDState(grid, geo; dt=cfl_dt(grid, p; courant=0.1), params=p, T=Float64)
+    @test isapprox(state.inv_eps_x[1, 1, 1], geo.inv_eps_x[1, 1, 1] / p.eps0)
+    inject_soft!(state.fields, :Ex, (2, 2, 2), 0.25; inv_eps=state.inv_eps_x)
+    @test isapprox(state.fields.Dx[2, 2, 2], 0.25 / state.inv_eps_x[2, 2, 2])
     state.fields.Ez[3, 3, 3] = 1.0
     step!(state)
     @test state.n == 1
@@ -558,6 +561,45 @@ end
                         incident_energy=2 * ref.incident_energy_J, incident_sx=2 .* ref.Sx_inc)
     @test any(q -> isfinite(nonref.R_omega[q]) && nonref.R_omega[q] != 0.0, eachindex(nonref.R_omega))
     @test isapprox(maximum(filter(isfinite, nonref.R_omega)), 0.5; atol=1e-6)
+end
+
+@testset "MO consistency metrics" begin
+    plus = (T_plus_R_plus_A=0.999, theta_faraday_deg=2.0)
+    zero = (T_plus_R_plus_A=1.000, theta_faraday_deg=0.0)
+    minus = (T_plus_R_plus_A=1.001, theta_faraday_deg=-1.0)
+    metrics = mo_consistency_metrics(plus, zero, minus)
+    @test isapprox(metrics.even_in_M_violation_plus_minus, -0.002; atol=1e-12)
+    @test isapprox(metrics.TRA_spread_plus_zero_minus, 0.002; atol=1e-12)
+    @test metrics.pedestal_avg_vs_zeroM == [0.5, 0.0]
+    @test metrics.conservative
+    bad_minus = merge(minus, (T_plus_R_plus_A=1.010,))
+    @test !mo_consistency_metrics(plus, zero, bad_minus).conservative
+    @test_throws ErrorException mo_consistency_metrics(plus, zero,
+        merge(minus, (T_plus_R_plus_A=NaN,)))
+end
+
+@testset "MO gyration midpoint update is even in M" begin
+    p = FDTDParams(532e-9)
+    dt = 1.1e-17
+    poles = build_probe_mo_poles(dt, p.eps0, MagnetoOpticModel(preset=:gdfeco).params)
+
+    function one_patch(qsign)
+        Ey = [1.25]
+        Ez = [-0.42]
+        mo = allocate_mo_ade_state(1, poles; T=Float64)
+        active = [1]
+        fill = [1.0]
+        material_pos = [1]
+        inv_eps = [1 / (p.eps0 * 4.0)]
+        m_TM = [qsign]
+        m_RE = [0.0]
+        patch_E_mo_gyration!(Ey, Ez, mo, active, fill, material_pos, inv_eps, inv_eps,
+                             m_TM, m_RE, poles, 0.02, 0.0, dt;
+                             backend=CPUBackend(), compute_T=Float64)
+        return Ey[1]^2 + Ez[1]^2
+    end
+
+    @test isapprox(one_patch(1.0), one_patch(-1.0); rtol=1e-12, atol=1e-12)
 end
 
 @testset "Snapshot helpers safe without magnetization" begin

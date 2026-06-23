@@ -148,6 +148,7 @@ function update_H!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real;
     return fields
 end
 
+# Three-dimensional inverse-permittivity volumes use absolute 1/(eps0*eps_r).
 function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, inv_eps_x, inv_eps_y, inv_eps_z;
                    cpml=nothing, backend::AbstractBackend=CPUBackend(),
                    compute_T::Type=default_compute_type(backend),
@@ -162,7 +163,6 @@ function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, in
     end
     Nx, Ny, Nz = size(fields.Ex)
     dtv = Float64(dt)
-    inv_eps0 = 1.0 / p.eps0
     idx, idy, idz = grid.x.inv_d_dual, grid.y.inv_d_dual, grid.z.inv_d_dual
     @inbounds for k in 2:Nz, j in 2:Ny, i in 2:Nx
         dHz_dy = (Float64(fields.Hz[i, j, k]) - Float64(fields.Hz[i, j - 1, k])) * idy[j]
@@ -177,11 +177,11 @@ function update_E!(fields::FieldState, grid::Grid3D, p::FDTDParams, dt::Real, in
         cz_term = dHy_dx - dHx_dy
 
         fields.Dx[i, j, k] += dtv * cx_term
-        fields.Ex[i, j, k] = fields.Dx[i, j, k] * Float64(inv_eps_x[i, j, k]) * inv_eps0
+        fields.Ex[i, j, k] = fields.Dx[i, j, k] * Float64(inv_eps_x[i, j, k])
         fields.Dy[i, j, k] += dtv * cy_term
-        fields.Ey[i, j, k] = fields.Dy[i, j, k] * Float64(inv_eps_y[i, j, k]) * inv_eps0
+        fields.Ey[i, j, k] = fields.Dy[i, j, k] * Float64(inv_eps_y[i, j, k])
         fields.Dz[i, j, k] += dtv * cz_term
-        fields.Ez[i, j, k] = fields.Dz[i, j, k] * Float64(inv_eps_z[i, j, k]) * inv_eps0
+        fields.Ez[i, j, k] = fields.Dz[i, j, k] * Float64(inv_eps_z[i, j, k])
     end
     return fields
 end

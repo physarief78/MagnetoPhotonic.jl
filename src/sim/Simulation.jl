@@ -97,7 +97,14 @@ function Simulation(; cell=(1.0,), resolution=nothing, dx=nothing, geometry=Scen
     fields = dimension == 1 ? allocate_fields(grid; T=T) :
              dimension == 2 ? allocate_fields(grid; mode=mode, T=T) :
              allocate_fields(grid; T=T)
-    inv_eps = dimension == 3 ? (inv_eps_x=geo.inv_eps_x, inv_eps_y=geo.inv_eps_y, inv_eps_z=geo.inv_eps_z) : geo.inv_eps
+    if dimension == 3
+        inv_eps0 = inv(Float64(params.eps0))
+        inv_eps = (inv_eps_x=T.(geo.inv_eps_x .* inv_eps0),
+                   inv_eps_y=T.(geo.inv_eps_y .* inv_eps0),
+                   inv_eps_z=T.(geo.inv_eps_z .* inv_eps0))
+    else
+        inv_eps = geo.inv_eps
+    end
     poles = hasproperty(geo, :poles) ? DLPole{Float64}[geo.poles...] : DLPole{Float64}[]
     active_indices = hasproperty(geo, :active_indices) ? collect(Int, geo.active_indices) : Int[]
     active_fill = hasproperty(geo, :active_fill) ? collect(Float64, geo.active_fill) : Float64[]

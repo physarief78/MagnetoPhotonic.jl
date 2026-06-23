@@ -14,9 +14,8 @@
 #  - The substrate (z < 0) is SiO2 everywhere.
 #  - act_inv_* = 1/(ε0·ε_component) — the screening factor consumed by the ADE
 #    patch denominator (the reference's act_inv convention).
-#  - The returned inv_eps_x/y/z volumes use the PACKAGE Yee convention 1/ε_r
-#    (the E-update kernel multiplies by 1/ε0 separately) so the Maxwell update
-#    is unchanged; only the staggered values differ.
+#  - The returned inv_eps_x/y/z geometry volumes use 1/ε_r. FDTDState converts
+#    them once to 1/(ε0·ε_r) before upload, matching the reference E kernel.
 
 # The reference rounds its polygons through Point2f (Float32) before the
 # point-in-polygon tests; reproduce that rounding for bit-equal fills.

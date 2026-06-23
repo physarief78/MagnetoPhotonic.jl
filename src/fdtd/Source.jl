@@ -89,7 +89,7 @@ function inject_soft!(fields::FieldState, component::Symbol, index::NTuple{3,Int
                       eps0::Real=1.0, inv_eps=nothing, backend::AbstractBackend=CPUBackend(),
                       compute_T::Type=default_compute_type(backend))
     if inv_eps !== nothing
-        return _ka_inject_soft_3d!(backend, fields, component, index, value, eps0, inv_eps, compute_T)
+        return _ka_inject_soft_3d!(backend, fields, component, index, value, inv_eps, compute_T)
     end
     arr = getfield(fields, component)
     arr[index...] += value
@@ -169,6 +169,7 @@ function _inject_2d_cell!(fields::Fields2D, component::Symbol, i::Int, j::Int, v
     return fields
 end
 
+# Three-dimensional source paths consume absolute 1/(eps0*eps_r) volumes.
 function inject!(fields::FieldState, grid::Grid3D, src::PointSource, t::Real, p::FDTDParams, inv_eps)
     pos = src.position
     val = source_value(src.pulse, t)
@@ -209,19 +210,19 @@ function inject!(fields::FieldState, grid::Grid3D, src::ModeSource, t::Real, p::
     inv_arr = src.component == :Ey ? inv_eps.inv_eps_y : src.component == :Ez ? inv_eps.inv_eps_z :
               throw(ArgumentError("ModeSource electric component must be :Ey or :Ez"))
     return _ka_inject_mode_x_3d!(backend, fields, src, grid, source_value(src.pulse, t),
-                                 p.eps0, inv_arr, compute_T)
+                                 inv_arr, compute_T)
 end
 
 function _inject_3d_cell!(fields::FieldState, component::Symbol, i::Int, j::Int, k::Int, val::Real, p::FDTDParams, inv_eps)
     if component == :Ex
         fields.Ex[i, j, k] += val
-        fields.Dx[i, j, k] += Float64(val) * p.eps0 / Float64(inv_eps.inv_eps_x[i, j, k])
+        fields.Dx[i, j, k] += Float64(val) / Float64(inv_eps.inv_eps_x[i, j, k])
     elseif component == :Ey
         fields.Ey[i, j, k] += val
-        fields.Dy[i, j, k] += Float64(val) * p.eps0 / Float64(inv_eps.inv_eps_y[i, j, k])
+        fields.Dy[i, j, k] += Float64(val) / Float64(inv_eps.inv_eps_y[i, j, k])
     elseif component == :Ez
         fields.Ez[i, j, k] += val
-        fields.Dz[i, j, k] += Float64(val) * p.eps0 / Float64(inv_eps.inv_eps_z[i, j, k])
+        fields.Dz[i, j, k] += Float64(val) / Float64(inv_eps.inv_eps_z[i, j, k])
     elseif component == :Hx
         fields.Hx[i, j, k] += val
     elseif component == :Hy

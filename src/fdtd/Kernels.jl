@@ -72,6 +72,7 @@ end
     j = I[2]
     k = I[3]
 
+    @inbounds begin
     dEz_dy = (CT(Ez[i, j + 1, k]) - CT(Ez[i, j, k])) * CT(inv_d_cell_y[j])
     dEy_dz = (CT(Ey[i, j, k + 1]) - CT(Ey[i, j, k])) * CT(inv_d_cell_z[k])
     dEx_dz = (CT(Ex[i, j, k + 1]) - CT(Ex[i, j, k])) * CT(inv_d_cell_z[k])
@@ -96,6 +97,7 @@ end
     Hz[i, j, k] = CT(Hz[i, j, k]) -
                   CT(dt_mu0) * ((dEy_dx * CT(x_inv_kappa[i]) + pHzx) -
                                 (dEx_dy * CT(y_inv_kappa[j]) + pHzy))
+    end  # @inbounds
 end
 
 @kernel function yee_E_3d_kernel!(Ex, Ey, Ez, @Const(Hx), @Const(Hy), @Const(Hz), Dx, Dy, Dz,
@@ -108,12 +110,13 @@ end
                                   psi_Dyz_lo, psi_Dyz_hi, psi_Dyx_lo, psi_Dyx_hi,
                                   psi_Dzx_lo, psi_Dzx_hi, psi_Dzy_lo, psi_Dzy_hi,
                                   Npml_x, Npml_y, Npml_z, Nx, Ny, Nz,
-                                  dt, inv_eps0, ::Val{CT}) where {CT}
+                                  dt, ::Val{CT}) where {CT}
     I = @index(Global, Cartesian)
     i = I[1] + 1
     j = I[2] + 1
     k = I[3] + 1
 
+    @inbounds begin
     dHz_dy = (CT(Hz[i, j, k]) - CT(Hz[i, j - 1, k])) * CT(inv_d_dual_y[j])
     dHy_dz = (CT(Hy[i, j, k]) - CT(Hy[i, j, k - 1])) * CT(inv_d_dual_z[k])
     dHx_dz = (CT(Hx[i, j, k]) - CT(Hx[i, j, k - 1])) * CT(inv_d_dual_z[k])
@@ -142,24 +145,25 @@ end
     Dx[i, j, k] = dx_new
     Dy[i, j, k] = dy_new
     Dz[i, j, k] = dz_new
-    Ex[i, j, k] = dx_new * CT(inv_eps_x[i, j, k]) * CT(inv_eps0)
-    Ey[i, j, k] = dy_new * CT(inv_eps_y[i, j, k]) * CT(inv_eps0)
-    Ez[i, j, k] = dz_new * CT(inv_eps_z[i, j, k]) * CT(inv_eps0)
+    Ex[i, j, k] = dx_new * CT(inv_eps_x[i, j, k])
+    Ey[i, j, k] = dy_new * CT(inv_eps_y[i, j, k])
+    Ez[i, j, k] = dz_new * CT(inv_eps_z[i, j, k])
+    end  # @inbounds
 end
 
 @kernel function inject_soft_3d_kernel!(Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz,
-                                        inv_eps, code, i, j, k, value, eps0,
+                                        inv_eps, code, i, j, k, value,
                                         ::Val{CT}) where {CT}
     val = CT(value)
     @inbounds if code == Int32(1)
         Ex[i, j, k] = CT(Ex[i, j, k]) + val
-        Dx[i, j, k] = CT(Dx[i, j, k]) + val * CT(eps0) / CT(inv_eps[i, j, k])
+        Dx[i, j, k] = CT(Dx[i, j, k]) + val / CT(inv_eps[i, j, k])
     elseif code == Int32(2)
         Ey[i, j, k] = CT(Ey[i, j, k]) + val
-        Dy[i, j, k] = CT(Dy[i, j, k]) + val * CT(eps0) / CT(inv_eps[i, j, k])
+        Dy[i, j, k] = CT(Dy[i, j, k]) + val / CT(inv_eps[i, j, k])
     elseif code == Int32(3)
         Ez[i, j, k] = CT(Ez[i, j, k]) + val
-        Dz[i, j, k] = CT(Dz[i, j, k]) + val * CT(eps0) / CT(inv_eps[i, j, k])
+        Dz[i, j, k] = CT(Dz[i, j, k]) + val / CT(inv_eps[i, j, k])
     elseif code == Int32(4)
         Hx[i, j, k] = CT(Hx[i, j, k]) + val
     elseif code == Int32(5)
@@ -170,7 +174,7 @@ end
 end
 
 @kernel function inject_mode_x_3d_kernel!(Ex, Ey, Ez, Hx, Hy, Hz, Dx, Dy, Dz,
-                                          profile, inv_eps, code, i, value, eps0,
+                                          profile, inv_eps, code, i, value,
                                           hcorr, ::Val{CT}) where {CT}
     I = @index(Global, Cartesian)
     j = I[1]
@@ -178,11 +182,11 @@ end
     amp = CT(value) * CT(profile[j, k])
     if code == Int32(2)
         Ey[i, j, k] = CT(Ey[i, j, k]) + amp
-        Dy[i, j, k] = CT(Dy[i, j, k]) + amp * CT(eps0) / CT(inv_eps[i, j, k])
+        Dy[i, j, k] = CT(Dy[i, j, k]) + amp / CT(inv_eps[i, j, k])
         Hz[i, j, k] = CT(Hz[i, j, k]) + CT(hcorr) * amp
     elseif code == Int32(3)
         Ez[i, j, k] = CT(Ez[i, j, k]) + amp
-        Dz[i, j, k] = CT(Dz[i, j, k]) + amp * CT(eps0) / CT(inv_eps[i, j, k])
+        Dz[i, j, k] = CT(Dz[i, j, k]) + amp / CT(inv_eps[i, j, k])
         Hy[i, j, k] = CT(Hy[i, j, k]) - CT(hcorr) * amp
     end
 end
@@ -229,7 +233,7 @@ end
 @kernel function mo_gyration_kernel!(Ey, Ez, Py_from_z, Jy_from_z, Pz_from_y, Jz_from_y,
                                      E_old_y, E_old_z, active_idx, fill, material_pos,
                                      inv_eps_y, inv_eps_z, m_TM_x, m_RE_x, poles, npoles,
-                                     Q_voigt_TM, Q_voigt_RE, inv_alpha, inv_eps0, ::Val{CT}) where {CT}
+                                     Q_voigt_TM, Q_voigt_RE, inv_alpha, ::Val{CT}) where {CT}
     n = @index(Global)
     @inbounds begin
     idx = active_idx[n]
@@ -241,44 +245,57 @@ end
         Ez_drive = CT(Ez[idx])
         Ey_old = CT(E_old_y[n])
         Ez_old = CT(E_old_z[n])
-        sum_P_y = zero(CT)
-        sum_P_z = zero(CT)
+        sum_psi_y = zero(CT)
+        sum_psi_z = zero(CT)
+        sumC3 = zero(CT)
 
         for pidx in 1:npoles
             pole = poles[pidx]
             beta = CT(pole.C3) * f * qeff
             Py_old = CT(Py_from_z[n, pidx])
             Jy_old = CT(Jy_from_z[n, pidx])
-            Py_new = muladd(CT(pole.C1), Py_old, muladd(CT(pole.C2), Jy_old, beta * Ez_old)) + beta * Ez_drive
-            sum_P_y += Py_new
+            sum_psi_y += muladd(CT(pole.C1), Py_old, muladd(CT(pole.C2), Jy_old, beta * Ez_old))
 
             Pz_old = CT(Pz_from_y[n, pidx])
             Jz_old = CT(Jz_from_y[n, pidx])
-            Pz_new = muladd(CT(pole.C1), Pz_old, muladd(CT(pole.C2), Jz_old, beta * Ey_old)) + beta * Ey_drive
-            sum_P_z += Pz_new
+            sum_psi_z += muladd(CT(pole.C1), Pz_old, muladd(CT(pole.C2), Jz_old, beta * Ey_old))
+            sumC3 += CT(pole.C3)
         end
 
-        # The polarization feedback is screened by 1/(ε0·ε): the volumes carry the
-        # staggered 1/ε, the ε0 factor arrives via inv_eps0 (reference act_inv).
-        Ey_final = Ey_drive - sum_P_y * CT(inv_eps_y[idx]) * CT(inv_eps0)
-        Ez_final = Ez_drive + sum_P_z * CT(inv_eps_z[idx]) * CT(inv_eps0)
+        # Crank-Nicolson midpoint update for the antisymmetric Ey<->Ez gyrotropic
+        # exchange. This is the reference MOCONSIST fix: the instantaneous MO
+        # coupling is solved simultaneously, while dispersive pole history remains
+        # explicit, so the off-diagonal term does no sign-dependent net work.
+        icy = CT(inv_eps_y[idx])
+        icz = CT(inv_eps_z[idx])
+        Bmo = f * qeff * sumC3
+        half = CT(0.5)
+        ay = half * icy * Bmo
+        az = half * icz * Bmo
+        RHSy = Ey_drive - icy * sum_psi_y - ay * Ez_drive
+        RHSz = Ez_drive + icz * sum_psi_z + az * Ey_drive
+        den = one(CT) + ay * az
+        Ez_final = (RHSz + az * RHSy) / den
+        Ey_final = RHSy - ay * Ez_final
         if isfinite(Ey_final) && isfinite(Ez_final)
             Ey[idx] = Ey_final
             Ez[idx] = Ez_final
             E_old_y[n] = Ey_final
             E_old_z[n] = Ez_final
+            Ey_mid = half * (Ey_drive + Ey_final)
+            Ez_mid = half * (Ez_drive + Ez_final)
             for pidx in 1:npoles
                 pole = poles[pidx]
                 beta = CT(pole.C3) * f * qeff
                 Py_old = CT(Py_from_z[n, pidx])
                 Jy_old = CT(Jy_from_z[n, pidx])
-                Py_new = muladd(CT(pole.C1), Py_old, muladd(CT(pole.C2), Jy_old, beta * Ez_old)) + beta * Ez_drive
+                Py_new = muladd(CT(pole.C1), Py_old, muladd(CT(pole.C2), Jy_old, beta * Ez_old)) + beta * Ez_mid
                 Py_from_z[n, pidx] = Py_new
                 Jy_from_z[n, pidx] = (Py_new - Py_old) * CT(inv_alpha) - Jy_old
 
                 Pz_old = CT(Pz_from_y[n, pidx])
                 Jz_old = CT(Jz_from_y[n, pidx])
-                Pz_new = muladd(CT(pole.C1), Pz_old, muladd(CT(pole.C2), Jz_old, beta * Ey_old)) + beta * Ey_drive
+                Pz_new = muladd(CT(pole.C1), Pz_old, muladd(CT(pole.C2), Jz_old, beta * Ey_old)) + beta * Ey_mid
                 Pz_from_y[n, pidx] = Pz_new
                 Jz_from_y[n, pidx] = (Pz_new - Pz_old) * CT(inv_alpha) - Jz_old
             end
@@ -543,23 +560,23 @@ function _ka_update_E_3d!(backend::AbstractBackend, fields::FieldState, grid::Gr
            cpml.psi_Dyz_lo, cpml.psi_Dyz_hi, cpml.psi_Dyx_lo, cpml.psi_Dyx_hi,
            cpml.psi_Dzx_lo, cpml.psi_Dzx_hi, cpml.psi_Dzy_lo, cpml.psi_Dzy_hi,
            cpml.Npml_x, cpml.Npml_y, cpml.Npml_z, Int32(Nx), Int32(Ny), Int32(Nz),
-           CT(dt), inv(CT(p.eps0)), Val(CT); ndrange=(Nx - 1, Ny - 1, Nz - 1))
+           CT(dt), Val(CT); ndrange=(Nx - 1, Ny - 1, Nz - 1))
     return fields
 end
 
 function _ka_inject_soft_3d!(backend::AbstractBackend, fields::FieldState, component::Symbol,
-                             index::NTuple{3,Int}, value::Real, eps0::Real, inv_eps,
+                             index::NTuple{3,Int}, value::Real, inv_eps,
                              ::Type{CT}) where {CT}
     kernel = _ka_kernel_cached(inject_soft_3d_kernel!, backend, nothing)
     kernel(fields.Ex, fields.Ey, fields.Ez, fields.Hx, fields.Hy, fields.Hz,
            fields.Dx, fields.Dy, fields.Dz, inv_eps, _component_code(component),
-           Int32(index[1]), Int32(index[2]), Int32(index[3]), CT(value), CT(eps0),
+           Int32(index[1]), Int32(index[2]), Int32(index[3]), CT(value),
            Val(CT); ndrange=1)
     return fields
 end
 
 function _ka_inject_mode_x_3d!(backend::AbstractBackend, fields::FieldState, src::ModeSource,
-                               grid::Grid3D, value::Real, eps0::Real, inv_eps,
+                               grid::Grid3D, value::Real, inv_eps,
                                ::Type{CT}) where {CT}
     src.axis === :x || throw(ArgumentError("KA ModeSource injection currently supports axis=:x"))
     src.component in (:Ey, :Ez) || throw(ArgumentError("ModeSource electric component must be :Ey or :Ez"))
@@ -570,7 +587,7 @@ function _ka_inject_mode_x_3d!(backend::AbstractBackend, fields::FieldState, src
     kernel = _ka_kernel_cached(inject_mode_x_3d_kernel!, backend, _workgroup(backend, _WG_2D))
     kernel(fields.Ex, fields.Ey, fields.Ez, fields.Hx, fields.Hy, fields.Hz,
            fields.Dx, fields.Dy, fields.Dz, src.profile, inv_eps,
-           _component_code(src.component), Int32(i), CT(value), CT(eps0), CT(hcorr),
+           _component_code(src.component), Int32(i), CT(value), CT(hcorr),
            Val(CT); ndrange=(Ny, Nz))
     return fields
 end
@@ -589,7 +606,7 @@ end
 function _ka_patch_E_mo_gyration!(backend::AbstractBackend, Ey, Ez, state::MagnetoOpticADEState,
                                   active_idx, fill, material_pos, inv_eps_y, inv_eps_z,
                                   m_TM_x, m_RE_x, poles::AbstractVector,
-                                  Q_voigt_TM::Real, Q_voigt_RE::Real, dt::Real, eps0::Real,
+                                  Q_voigt_TM::Real, Q_voigt_RE::Real, dt::Real,
                                   ::Type{CT}) where {CT}
     N = length(active_idx)
     (N > 0 && length(poles) > 0) || return Ey, Ez
@@ -597,7 +614,7 @@ function _ka_patch_E_mo_gyration!(backend::AbstractBackend, Ey, Ez, state::Magne
     kernel(Ey, Ez, state.Py_from_z, state.Jy_from_z, state.Pz_from_y, state.Jz_from_y,
            state.E_old_y, state.E_old_z, active_idx, fill, material_pos, inv_eps_y, inv_eps_z,
            m_TM_x, m_RE_x, poles, Int32(length(poles)), CT(Q_voigt_TM), CT(Q_voigt_RE),
-           CT(2) / CT(dt), inv(CT(eps0)), Val(CT); ndrange=N)
+           CT(2) / CT(dt), Val(CT); ndrange=N)
     return Ey, Ez
 end
 

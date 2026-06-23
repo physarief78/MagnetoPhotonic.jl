@@ -35,5 +35,5 @@ function patch_E_mo_gyration!(Ey, Ez, state::MagnetoOpticADEState, active_idx::A
                               backend::AbstractBackend=CPUBackend(), compute_T::Type=default_compute_type(backend))
     return _ka_patch_E_mo_gyration!(backend, Ey, Ez, state, active_idx, fill, material_pos,
                                     inv_eps_y, inv_eps_z, m_TM_x, m_RE_x, poles,
-                                    Q_voigt_TM, Q_voigt_RE, dt, eps0, compute_T)
+                                    Q_voigt_TM, Q_voigt_RE, dt, compute_T)
 end

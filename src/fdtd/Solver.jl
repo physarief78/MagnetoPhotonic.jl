@@ -84,9 +84,14 @@ function FDTDState(grid::Grid3D, geo;
     inv_d_dual_x = adapt_backend(b, CT.(grid.x.inv_d_dual))
     inv_d_dual_y = adapt_backend(b, CT.(grid.y.inv_d_dual))
     inv_d_dual_z = adapt_backend(b, CT.(grid.z.inv_d_dual))
-    inv_eps_x = adapt_backend(b, CT.(geo.inv_eps_x))
-    inv_eps_y = adapt_backend(b, CT.(geo.inv_eps_y))
-    inv_eps_z = adapt_backend(b, CT.(geo.inv_eps_z))
+    # Geometry exposes relative 1/eps_r. Store absolute 1/(eps0*eps_r) here so every
+    # 3-D E update can use one multiply, matching the reference kernel. These three
+    # full-grid volumes stay at field precision to avoid the WDDM memory-residency cliff;
+    # kernels promote each load to CT for arithmetic.
+    inv_eps0 = inv(Float64(params.eps0))
+    inv_eps_x = adapt_backend(b, T.(geo.inv_eps_x .* inv_eps0))
+    inv_eps_y = adapt_backend(b, T.(geo.inv_eps_y .* inv_eps0))
+    inv_eps_z = adapt_backend(b, T.(geo.inv_eps_z .* inv_eps0))
     # Host-resident on purpose: the only consumer is the mode solver, which pulls a
     # YZ plane to host immediately (`_epsr_mode_plane` → `to_host`). Keeping this full
     # Float64 volume on the GPU wasted ~620 MB and pushed the 6 GiB WDDM card to 100%
@@ -262,64 +267,78 @@ function _cell_volumes_from_grid(grid::Grid3D, cells::Vector{Int})
     return vols
 end
 
-function step!(state::FDTDState)
+# Type-stable hot loop (function barrier). FDTDState has several abstract/untyped fields
+# (compute_T::DataType, untyped inv_eps_*/inv_d_*, backend::AbstractBackend, source/region/
+# poles ::Any). Touching them per step boxed values and rebuilt Val(compute_T) on every
+# kernel launch — the ~220 MB/1000-step host allocations and the GC pauses that stall the GPU.
+# step! reads those fields ONCE and forwards them to a concretely-typed inner function, so
+# every kernel launch specializes on the real types (no per-launch boxing) and Val(CT) is a
+# compile-time constant; the lone dynamic dispatch is the barrier call, amortized over the step.
+step!(state::FDTDState) = _step_typed!(state, state.backend, state.compute_T,
+    state.inv_eps_x, state.inv_eps_y, state.inv_eps_z,
+    state.inv_d_cell_x, state.inv_d_cell_y, state.inv_d_cell_z,
+    state.inv_d_dual_x, state.inv_d_dual_y, state.inv_d_dual_z,
+    state.source, state.region, state.diag_poles, state.mo_poles, state.mo_pos, state.model)
+
+function _step_typed!(state::FDTDState, backend, ::Type{CT},
+                      inv_eps_x, inv_eps_y, inv_eps_z,
+                      inv_d_cell_x, inv_d_cell_y, inv_d_cell_z,
+                      inv_d_dual_x, inv_d_dual_y, inv_d_dual_z,
+                      source, region, diag_poles, mo_poles, mo_pos, model) where {CT}
     prof = _STEP_PROF_ON[]
     prof && _prof_mark!(state)
     update_H!(state.fields, state.grid, state.params, state.dt; cpml=state.cpml,
-              backend=state.backend, compute_T=state.compute_T,
-              inv_d_cell_x=state.inv_d_cell_x, inv_d_cell_y=state.inv_d_cell_y,
-              inv_d_cell_z=state.inv_d_cell_z)
+              backend=backend, compute_T=CT,
+              inv_d_cell_x=inv_d_cell_x, inv_d_cell_y=inv_d_cell_y,
+              inv_d_cell_z=inv_d_cell_z)
     prof && _prof_tick!(state, :H)
 
-    if state.source !== nothing
-        if state.source isa Tuple
-            pulse, component, index = state.source
-            inv_arr = component == :Ex ? state.inv_eps_x : component == :Ey ? state.inv_eps_y : state.inv_eps_z
+    if source !== nothing
+        if source isa Tuple
+            pulse, component, index = source
+            inv_arr = component == :Ex ? inv_eps_x : component == :Ey ? inv_eps_y : inv_eps_z
             inject_soft!(state.fields, component, index, source_value(pulse, state.t);
-                         eps0=state.params.eps0, inv_eps=inv_arr,
-                         backend=state.backend, compute_T=state.compute_T)
-        elseif state.source isa ModeSource
-            inject!(state.fields, state.grid, state.source, state.t, state.params,
-                    (inv_eps_x=state.inv_eps_x, inv_eps_y=state.inv_eps_y, inv_eps_z=state.inv_eps_z);
-                    backend=state.backend, compute_T=state.compute_T)
-        elseif state.source isa AbstractEMSource
-            inject!(state.fields, state.grid, state.source, state.t, state.params,
-                    (inv_eps_x=state.inv_eps_x, inv_eps_y=state.inv_eps_y, inv_eps_z=state.inv_eps_z))
+                         inv_eps=inv_arr,
+                         backend=backend, compute_T=CT)
+        elseif source isa ModeSource
+            inject!(state.fields, state.grid, source, state.t, state.params,
+                    (inv_eps_x=inv_eps_x, inv_eps_y=inv_eps_y, inv_eps_z=inv_eps_z);
+                    backend=backend, compute_T=CT)
+        elseif source isa AbstractEMSource
+            inject!(state.fields, state.grid, source, state.t, state.params,
+                    (inv_eps_x=inv_eps_x, inv_eps_y=inv_eps_y, inv_eps_z=inv_eps_z))
         end
     end
     prof && _prof_tick!(state, :src)
 
     update_E!(state.fields, state.grid, state.params, state.dt,
-              state.inv_eps_x, state.inv_eps_y, state.inv_eps_z; cpml=state.cpml,
-              backend=state.backend, compute_T=state.compute_T,
-              inv_d_dual_x=state.inv_d_dual_x, inv_d_dual_y=state.inv_d_dual_y,
-              inv_d_dual_z=state.inv_d_dual_z)
+              inv_eps_x, inv_eps_y, inv_eps_z; cpml=state.cpml,
+              backend=backend, compute_T=CT,
+              inv_d_dual_x=inv_d_dual_x, inv_d_dual_y=inv_d_dual_y,
+              inv_d_dual_z=inv_d_dual_z)
     prof && _prof_tick!(state, :E)
 
     if state.ade_x !== nothing
-        region = state.region
-        patch_E_dispersive!(state.fields.Ex, state.ade_x, region.ade_idx_x, region.ade_f_x, region.ade_inv_x, state.diag_poles, state.dt;
-                            backend=state.backend, compute_T=state.compute_T)
-        patch_E_dispersive!(state.fields.Ey, state.ade_y, region.ade_idx_y, region.ade_f_y, region.ade_inv_y, state.diag_poles, state.dt;
-                            backend=state.backend, compute_T=state.compute_T)
-        patch_E_dispersive!(state.fields.Ez, state.ade_z, region.ade_idx_z, region.ade_f_z, region.ade_inv_z, state.diag_poles, state.dt;
-                            backend=state.backend, compute_T=state.compute_T)
+        patch_E_dispersive!(state.fields.Ex, state.ade_x, region.ade_idx_x, region.ade_f_x, region.ade_inv_x, diag_poles, state.dt;
+                            backend=backend, compute_T=CT)
+        patch_E_dispersive!(state.fields.Ey, state.ade_y, region.ade_idx_y, region.ade_f_y, region.ade_inv_y, diag_poles, state.dt;
+                            backend=backend, compute_T=CT)
+        patch_E_dispersive!(state.fields.Ez, state.ade_z, region.ade_idx_z, region.ade_f_z, region.ade_inv_z, diag_poles, state.dt;
+                            backend=backend, compute_T=CT)
     end
     prof && _prof_tick!(state, :ADE)
 
     if state.mo !== nothing && state.mag !== nothing
-        gd = state.model.params
-        region = state.region
+        gd = model.params
         # MO gyration on the Ez active list (the reference's act_idx_mo = act_idx_z),
         # with the map from MO position to the all-list position of the m arrays.
-        # The kernel applies the 1/ε0 screening factor to the staggered 1/ε volumes.
+        # The staggered volumes already carry the full 1/(eps0*eps_r) screening factor.
         patch_E_mo_gyration!(state.fields.Ey, state.fields.Ez, state.mo,
-                             region.mo_idx, region.mo_fill, state.mo_pos,
-                             state.inv_eps_y, state.inv_eps_z,
-                             state.mag.m_TM_x, state.mag.m_RE_x, state.mo_poles,
+                             region.mo_idx, region.mo_fill, mo_pos,
+                             inv_eps_y, inv_eps_z,
+                             state.mag.m_TM_x, state.mag.m_RE_x, mo_poles,
                              gd.Q_voigt_TM, gd.Q_voigt_RE, state.dt;
-                             eps0=state.params.eps0,
-                             backend=state.backend, compute_T=state.compute_T)
+                             backend=backend, compute_T=CT)
     end
     prof && _prof_tick!(state, :MO)
 
@@ -331,9 +350,9 @@ function step!(state::FDTDState)
     # also runs with multiphysics FROZEN — the reference's probe loop accumulates
     # U_abs_probe every step, which supplies the physical film absorption for A.
     if state.absorption !== nothing
-        accumulate_absorption!(state.absorption, state.fields, state.region, state.model, state.dt;
+        accumulate_absorption!(state.absorption, state.fields, region, model, state.dt;
                                absorption_model=state.absorption_model, eps0=state.params.eps0,
-                               backend=state.backend,
+                               backend=backend,
                                ade_x=state.ade_x, ade_y=state.ade_y, ade_z=state.ade_z)
     end
     prof && _prof_tick!(state, :pabs)

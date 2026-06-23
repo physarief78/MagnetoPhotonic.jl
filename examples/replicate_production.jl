@@ -18,11 +18,12 @@
 # Big .h5 outputs are written to PackageValidation/ (override with PACKAGE_VALIDATION_DIR) so
 # they can be git-ignored while the package source is published.
 #
-# Tiers:  julia --project=. examples/replicate_production.jl <smoke|calibrate|production|probe>
+# Tiers:  julia --project=. examples/replicate_production.jl <smoke|calibrate|production|probe|consistency>
 #   smoke       CPU pipeline check (tiny grid), exercises both writers + the frozen-m loader
 #   calibrate   sweep pump_E_scale and report absorbed fluence / Te peak / switch fraction
 #   production  GPU pump+relax on the 60um NOT-gate -> production HDF5 + frozen magnetization
 #   probe       GPU 3-shot 532 nm readout (reloads frozen m from the production HDF5) -> GOLDSTD
+#   consistency GPU bare/+M/0/-M 532 nm readout -> reference-compatible MOCONSIST HDF5
 
 using MagnetoPhotonic
 
@@ -37,7 +38,7 @@ const TIER = get(ARGS, 1, "smoke")
 # Load the CUDA backend extension at TOP LEVEL for the GPU tiers, before any GPU code runs.
 # Loading it lazily inside a function trips a world-age error: the already-running call
 # cannot see the backend methods the extension adds.
-if TIER in ("production", "probe", "spotcheck", "probespeed")
+if TIER in ("production", "probe", "consistency", "spotcheck", "probespeed")
     try
         @eval using CUDA
     catch err
@@ -104,7 +105,7 @@ end
 # CUDA is loaded at top level (above) for the GPU tiers; here we just verify a functional GPU.
 function ensure_cuda()
     ok = MagnetoPhotonic.has_gpu()
-    ok || @warn "No functional CUDA GPU detected; the :cuda backend will error. Ensure CUDA.jl is installed and a GPU is available."
+    ok || error("No functional CUDA GPU detected. Ensure CUDA.jl is installed, the MagnetoPhotonic CUDA extension loads, and a GPU is available.")
     return ok
 end
 
@@ -173,7 +174,7 @@ function tier_config(tier::AbstractString; backend_device=:cpu)
             probe=ProbeConfig(kind=:mode, lambda0=PROBE_LAMBDA, amplitude=1.0e6,
                               tau=24e-15, t0=96e-15, component=:Ez,
                               position=1.0e-6, neff_guess=2.0),
-            model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=tier == "probe" ? 1 : 8,
+            model=ModelConfig(absorption_model=:ade_work, multiphysics_subcycle=1,
                               brillouin_iters=2, Hsw0=0.0, pump_E_scale=1.0),
             # Reference anisotropic CPML: 40 cells along x (propagation) for the −60 dB budget,
             # 12 transverse. Slab-stored, so the thick x-PML costs only a few MB.
@@ -775,6 +776,178 @@ function run_probespeed()
     MagnetoPhotonic.free_state!(st)
 end
 
+function _equilibrium_moments(model::MagnetoOpticModel)
+    gd = model.params
+    tm, re, Tmin, invdT, nT = build_m_eq_lut(gd)
+    return (lookup_m_eq_lut(tm, gd.T0, Tmin, invdT, nT),
+            lookup_m_eq_lut(re, gd.T0, Tmin, invdT, nT))
+end
+
+function _consistency_seed(source_h5::AbstractString, model::MagnetoOpticModel)
+    values = HDF5.h5open(source_h5, "r") do f
+        read_scalar(path) = haskey(f, path) ? Float64(read(f[path])) : NaN
+        (m_TM0=read_scalar("metadata/initial_m_TM_x_reduced"),
+         m_RE0=read_scalar("metadata/initial_m_RE_x_reduced"),
+         switch_fraction=read_scalar("shot_1/final_switch_fraction"),
+         core_switch_fraction=read_scalar("shot_1/final_core_switch_fraction"))
+    end
+    if !(isfinite(values.m_TM0) && isfinite(values.m_RE0))
+        m_TM0, m_RE0 = _equilibrium_moments(model)
+        @warn "production metadata lacks finite initial moments; using equilibrium LUT" m_TM0=m_TM0 m_RE0=m_RE0
+        return merge(values, (; m_TM0, m_RE0))
+    end
+    return values
+end
+
+function _initialize_consistency_h5(out::AbstractString, source_h5::AbstractString,
+                                    model::MagnetoOpticModel, cfg, dt::Real, seed)
+    gd = model.params
+    p = FDTDParams(PROBE_LAMBDA)
+    diag_poles = build_probe_poles(dt, p.eps0, gd)
+    mo_poles = build_probe_mo_poles(dt, p.eps0, gd)
+    HDF5.h5open(out, "w") do f
+        g = HDF5.create_group(f, "probe")
+        g["readout_scope"] = "phase3_only_from_existing_h5_frozen_initial_and_relaxed_switched_states"
+        g["source_h5"] = String(source_h5)
+        g["output_h5"] = String(out)
+        g["tra_method"] = "gold_standard: bare-waveguide reference normalization run + full-run net-flux T/R/A (no time gating)"
+        g["probe_run_mode"] = "no_phase1_or_phase2_rerun"
+        g["geometry_note"] = "probe geometry reuses the reference pump grid/occupancy at 532 nm"
+        g["mo_coupling"] = "polar Faraday geometry k||M||x; off-diagonal ADE couples Ey/Ez with Q_TM*m_TM_x + Q_RE*m_RE_x"
+        g["eps_probe_target_re_im"] = Float64[gd.eps_real_probe, gd.eps_imag_probe]
+        g["Q_voigt_TM"] = Float64(gd.Q_voigt_TM)
+        g["Q_voigt_RE"] = Float64(gd.Q_voigt_RE)
+        g["Hsw0_T_for_parameter_record"] = Float64(gd.Hsw0)
+        g["absorption_model"] = "ADE positive local material work approximation max(E_dot_J_ADE,0)"
+        g["absorption_model_id"] = Int64(2)
+        g["probe_tau_s"] = Float64(cfg.probe.tau)
+        g["probe_tau_note"] = "Gaussian field-envelope sigma; 24 fs gives about 40 fs intensity FWHM."
+        g["probe_pole_positions_omega0_gamma"] =
+            reduce(vcat, ([Float64(x[1]) Float64(x[2])] for x in MagnetoPhotonic._PROBE_POLE_POSITIONS))
+        g["probe_diag_poles_C1_C2_C3"] = reduce(vcat, ([x.C1 x.C2 x.C3] for x in diag_poles))
+        g["probe_mo_poles_C1_C2_C3"] = reduce(vcat, ([x.C1 x.C2 x.C3] for x in mo_poles))
+        g["final_switch_fraction_from_shot_1"] = Float64(seed.switch_fraction)
+        g["final_core_switch_fraction_from_shot_1"] = Float64(seed.core_switch_fraction)
+        g["zero_magnetization_reference"] = Int8(0)
+        g["mo_consistency_test"] = Int8(1)
+        g["mo_consistency_test_note"] = "Energy-conservation diagnostic: runs +M (uniform saturated initial), 0 (M=0), and -M (uniform exact sign flip of initial) through the same engine. Diagonal optics are identical across the three, and a gyrotropic (Faraday) coupling does ZERO net work, so a conservative MO update MUST give a magnetization-independent T+R+A (even in M). Any spread in T+R+A across +M/0/-M is spurious work from the explicit off-diagonal MO step. Shots: /probe/{plus_M,zero_M,minus_M}."
+    end
+    return out
+end
+
+function _write_consistency_summary!(out::AbstractString, metrics, qeff_plus::Real)
+    note = "T+R+A must be even in M for a conservative gyrotropic update; spread quantifies spurious work in the explicit off-diagonal MO step."
+    verdict = metrics.conservative ?
+        "MO update is effectively conservative; residual deficit is real lateral scattering." :
+        "MO update is non-energy-conserving; spread indicates state-dependent spurious work."
+    HDF5.h5open(out, "r+") do f
+        g = HDF5.create_group(f["probe"], "consistency")
+        g["TRA_plus_M"] = metrics.TRA_plus_M
+        g["TRA_zero_M"] = metrics.TRA_zero_M
+        g["TRA_minus_M"] = metrics.TRA_minus_M
+        g["even_in_M_violation_plus_minus"] = metrics.even_in_M_violation_plus_minus
+        g["TRA_spread_plus_zero_minus"] = metrics.TRA_spread_plus_zero_minus
+        g["qeff_plus_M"] = Float64(qeff_plus)
+        g["theta_faraday_deg_plus_zero_minus"] = metrics.theta_faraday_deg_plus_zero_minus
+        g["pedestal_avg_vs_zeroM"] = metrics.pedestal_avg_vs_zeroM
+        g["note"] = note
+        g["conservative_tolerance"] = metrics.tolerance
+        g["conservative"] = Int8(metrics.conservative)
+        g["verdict"] = verdict
+    end
+    return verdict
+end
+
+# Package port of the reference mo_consistency_test. Each completed shot is flushed to
+# the reference-compatible /probe hierarchy before the next multi-hour shot begins.
+function run_consistency()
+    get(ENV, "PROBE_PROFILE_KERNELS", "0") == "1" &&
+        @info "PROBE_PROFILE_KERNELS=1 detected - probe kernel profiling enabled"
+    ensure_cuda()
+    model = MagnetoOpticModel(preset=:gdfeco)
+    dev = production_device(; model=model, lambda=PROBE_LAMBDA)
+    dev_bare = production_device(; model=model, lambda=PROBE_LAMBDA, bare=true)
+    cfg = tier_config("probe"; backend_device=:cuda)
+    dt = package_dt(cfg)
+    steps_probe = max(1, round(Int, PROBE_DURATION_S / dt))
+    source_h5 = get(ENV, "MAG_SOURCE_H5",
+                    outpath("raw_v6_full_production_empirical_Hsw0_0T_Escale_1p27.h5"))
+    isfile(source_h5) ||
+        error("frozen-magnetization source not found: $source_h5\n" *
+              "Run the `production` tier first, or set MAG_SOURCE_H5 to a package production HDF5.")
+    seed = _consistency_seed(source_h5, model)
+    m_TM0, m_RE0 = seed.m_TM0, seed.m_RE0
+    @assert isfinite(m_TM0) && isfinite(m_RE0)
+    out = outpath("raw_v6_MOCONSIST_Hsw0_0T_Escale_1p27.h5")
+    isfile(out) && rm(out)
+    _initialize_consistency_h5(out, source_h5, model, cfg, dt, seed)
+    @info "consistency: +M/0/-M uniform sweep (T+R+A must be even in M)" dt=dt steps_probe=steps_probe m_TM0=m_TM0 m_RE0=m_RE0 out=out
+    geo_probe = reference_geometry(cfg, PROBE_LAMBDA)
+    geo_bare = reference_geometry(cfg, PROBE_LAMBDA; bare=true)
+
+    set_uniform(mtm, mre) = function (state)
+        log_cuda_memory_after_init(state)
+        CT = state.compute_T
+        fill!(state.mag.m_TM_x, CT(mtm)); fill!(state.mag.m_TM_y, CT(0)); fill!(state.mag.m_TM_z, CT(0))
+        fill!(state.mag.m_RE_x, CT(mre)); fill!(state.mag.m_RE_y, CT(0)); fill!(state.mag.m_RE_z, CT(0))
+        return nothing
+    end
+    guard() = NaNGuard(filter(n -> n <= steps_probe,
+                              unique([5000, 20000, 40000, 60000, steps_probe])))
+
+    ref, rs = run_probe_shot(cfg, dev_bare, model; label="reference", is_reference=true,
+        steps=steps_probe, frame_target=0, use_reference_source=true, geo=geo_bare,
+        nan_guard=guard(), log_every=1000, on_init=log_cuda_memory_after_init)
+    append_probe_shot_h5!(out, "reference", ref; state=rs)
+    MagnetoPhotonic.free_state!(rs); rs = nothing
+    pm, ps = run_probe_shot(cfg, dev, model; label="plus_M", is_reference=false,
+        steps=steps_probe, frame_target=0, use_reference_source=true, geo=geo_probe,
+        incident_energy=ref.incident_energy_J, incident_sx=ref.Sx_inc,
+        on_init=set_uniform(m_TM0, m_RE0), nan_guard=guard(), log_every=1000)
+    append_probe_shot_h5!(out, "plus_M", pm; state=ps)
+    MagnetoPhotonic.free_state!(ps); ps = nothing
+    zm, zs = run_probe_shot(cfg, dev, model; label="zero_M", is_reference=false,
+        steps=steps_probe, frame_target=0, use_reference_source=true, geo=geo_probe,
+        incident_energy=ref.incident_energy_J, incident_sx=ref.Sx_inc,
+        on_init=set_uniform(0.0, 0.0), nan_guard=guard(), log_every=1000)
+    append_probe_shot_h5!(out, "zero_M", zm; state=zs)
+    MagnetoPhotonic.free_state!(zs); zs = nothing
+    mm, ms = run_probe_shot(cfg, dev, model; label="minus_M", is_reference=false,
+        steps=steps_probe, frame_target=0, use_reference_source=true, geo=geo_probe,
+        incident_energy=ref.incident_energy_J, incident_sx=ref.Sx_inc,
+        on_init=set_uniform(-m_TM0, -m_RE0), nan_guard=guard(), log_every=1000)
+    append_probe_shot_h5!(out, "minus_M", mm; state=ms)
+    MagnetoPhotonic.free_state!(ms); ms = nothing
+
+    metrics = mo_consistency_metrics(pm, zm, mm; tolerance=5.0e-3)
+    qeff_plus = model.params.Q_voigt_TM * m_TM0 + model.params.Q_voigt_RE * m_RE0
+    f4(x) = lpad(string(round(Float64(x), digits=4)), 9)
+    f5(x) = lpad(string(round(Float64(x), digits=5)), 11)
+    println("\n=== PACKAGE MO energy-conservation consistency (T+R+A MUST be even in M) ===")
+    println("  qeff(+M) = ", round(qeff_plus, digits=5), " , qeff(0) = 0 , qeff(-M) = ", round(-qeff_plus, digits=5))
+    println("  state        T         R         A        T+R+A    1-(T+R+A)")
+    for (lbl, s) in (("+M", pm), ("0 ", zm), ("-M", mm))
+        total = s.T_plus_R_plus_A
+        println("  ", lbl, "   ", f4(s.T), f4(s.R), f4(s.A), f5(total), f5(1 - total))
+    end
+    println("  EVEN-in-M violation (T+R+A|+M - T+R+A|-M) = ", round(metrics.even_in_M_violation_plus_minus, digits=5))
+    println("  Max spread over +M/0/-M                    = ", round(metrics.TRA_spread_plus_zero_minus, digits=5))
+    println("  Faraday theta_F (deg): +M=", round(pm.theta_faraday_deg, digits=4),
+            " , 0=", round(zm.theta_faraday_deg, digits=4),
+            " , -M=", round(mm.theta_faraday_deg, digits=4), "  (ODD in M expected)")
+    println("  Pedestal: (theta_F(+M)+theta_F(-M))/2 = ",
+            round(metrics.pedestal_avg_vs_zeroM[1], digits=4),
+            "  vs  theta_F(0) = ", round(metrics.pedestal_avg_vs_zeroM[2], digits=4))
+    if metrics.conservative
+        println("  VERDICT: spread <= 0.005 -> MO update is effectively conservative; residual deficit is real lateral scattering.")
+    else
+        println("  VERDICT: spread > 0.005 -> MO update is NON-energy-conserving (state-dependent spurious work).")
+    end
+    verdict = _write_consistency_summary!(out, metrics, qeff_plus)
+    @info "consistency complete" output=out spread=metrics.TRA_spread_plus_zero_minus even_viol=metrics.even_in_M_violation_plus_minus conservative=metrics.conservative verdict=verdict
+    return (; output=out, metrics, qeff_plus)
+end
+
 if TIER == "smoke"
     run_smoke()
 elseif TIER == "calibrate"
@@ -787,6 +960,8 @@ elseif TIER == "spotcheck"
     run_spotcheck()
 elseif TIER == "probespeed"
     run_probespeed()
+elseif TIER == "consistency"
+    run_consistency()
 else
-    error("unknown tier $TIER; expected smoke, calibrate, production, probe, spotcheck, or probespeed")
+    error("unknown tier $TIER; expected smoke, calibrate, production, probe, consistency, spotcheck, or probespeed")
 end

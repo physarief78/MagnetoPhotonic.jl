@@ -92,7 +92,7 @@ export magnetization_snapshot, apply_magnetization!
 export Simulation, PointMonitor, FieldMonitor, FluxMonitor, DFTMonitor
 export Transmission, Reflection, Absorption, Polarimetry, SwitchedFraction, FilmAverage, AbsorbedPower, Progress, NaNGuard
 export HotCellTrace, CallbackMonitor, switching_metrics
-export ProbeReadout, probe_shot, probe_contrast, film_active_snapshot
+export ProbeReadout, probe_shot, probe_contrast, mo_consistency_metrics, film_active_snapshot
 export record!, monitor_data
 export Phase, Pump, Relax, Probe, Result, init_state, run_phase!, run_experiment
 export AbstractPhysicsModel, NullModel, FerrimagnetParameters, GdFeCoParameters, MagnetoOpticModel
@@ -108,6 +108,7 @@ export extrude_waveguide_mesh, write_device_obj, write_plan_svg, plot_scene
 export field_slice, capture_frames, render_field_video, compute_spectrum, diagnostic_summary
 export save_state, load_state, save_hdf5_state, load_hdf5_state, save_run, load_run
 export save_magnetization, load_magnetization, load_magnetization!, load_production_magnetization
+export append_probe_shot_h5!
 export write_production_h5, write_goldstd_h5, h5_schema_signature, assert_h5_schema_compatible
 export production_frame_writer, record_production_frame!, close_frame_writer!
 export probe_frame_writer, record_probe_frame!

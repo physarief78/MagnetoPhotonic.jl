@@ -152,13 +152,10 @@ function _ref_yee_E!(Dx, Dy, Dz, Ex, Ey, Ez, Hx, Hy, Hz,
                      pEy_x_lo, pEy_x_hi, pEy_z_lo, pEy_z_hi,
                      pEz_x_lo, pEz_x_hi, pEz_y_lo, pEz_y_hi,
                      inv_kx, inv_ky, inv_kz, ax, ay, az, bx, by, bz,
-                     inv_eps_x, inv_eps_y, inv_eps_z, inv_eps0,
+                     inv_eps_x, inv_eps_y, inv_eps_z,
                      dt, inv_dx_dual, inv_dy_dual, inv_dz_dual,
                      Nx::Int32, Ny::Int32, Nz::Int32, N_pml_x::Int32, N_pml_y::Int32, N_pml_z::Int32)
-    # NOTE one deliberate difference from the reference kernel text: the package's
-    # inv_eps_* volumes hold the RELATIVE inverse permittivity (1/εr) with 1/ε0 applied
-    # as the separate `inv_eps0` scalar (matching yee_E_3d_kernel!), while the reference
-    # bakes 1/(ε0·εr) into its arrays. Every E store below therefore carries * inv_eps0.
+    # FDTDState arrays carry absolute 1/(eps0*eps_r), matching the reference.
     ix = (CUDA.blockIdx().x - Int32(1)) * CUDA.blockDim().x + CUDA.threadIdx().x
     iy = (CUDA.blockIdx().y - Int32(1)) * CUDA.blockDim().y + CUDA.threadIdx().y
     iz = (CUDA.blockIdx().z - Int32(1)) * CUDA.blockDim().z + CUDA.threadIdx().z
@@ -200,7 +197,7 @@ function _ref_yee_E!(Dx, Dy, Dz, Ex, Ey, Ez, Hx, Hy, Hz,
             end
             dx_new = Float64(Dx[ix, iy, iz]) + dt * ((dHz_dy_dx * inv_ky[iy] - dHy_dz_dx * inv_kz[iz]) + (term_y - term_z))
             Dx[ix, iy, iz] = FT(dx_new)
-            Ex[ix, iy, iz] = FT(dx_new * inv_eps_x[ix, iy, iz] * inv_eps0)
+            Ex[ix, iy, iz] = FT(dx_new * inv_eps_x[ix, iy, iz])
 
             dHx_dz_dx = Float64(dHx_dz) * inv_dz_dual[iz]
             term_z2 = 0.0
@@ -225,7 +222,7 @@ function _ref_yee_E!(Dx, Dy, Dz, Ex, Ey, Ez, Hx, Hy, Hz,
             end
             dy_new = Float64(Dy[ix, iy, iz]) + dt * ((dHx_dz_dx * inv_kz[iz] - dHz_dx_dx * inv_kx[ix]) + (term_z2 - term_x))
             Dy[ix, iy, iz] = FT(dy_new)
-            Ey[ix, iy, iz] = FT(dy_new * inv_eps_y[ix, iy, iz] * inv_eps0)
+            Ey[ix, iy, iz] = FT(dy_new * inv_eps_y[ix, iy, iz])
 
             dHy_x_dx = Float64(dHy_dx) * inv_dx_dual[ix]
             term_x2 = 0.0
@@ -250,16 +247,16 @@ function _ref_yee_E!(Dx, Dy, Dz, Ex, Ey, Ez, Hx, Hy, Hz,
             end
             dz_new = Float64(Dz[ix, iy, iz]) + dt * ((dHy_x_dx * inv_kx[ix] - dHx_y_dx * inv_ky[iy]) + (term_x2 - term_y2))
             Dz[ix, iy, iz] = FT(dz_new)
-            Ez[ix, iy, iz] = FT(dz_new * inv_eps_z[ix, iy, iz] * inv_eps0)
+            Ez[ix, iy, iz] = FT(dz_new * inv_eps_z[ix, iy, iz])
         else
             Dx[ix, iy, iz] += dt * (dHz_dy * inv_dy_dual[iy] - dHy_dz * inv_dz_dual[iz])
-            Ex[ix, iy, iz] = Dx[ix, iy, iz] * inv_eps_x[ix, iy, iz] * inv_eps0
+            Ex[ix, iy, iz] = Dx[ix, iy, iz] * inv_eps_x[ix, iy, iz]
 
             Dy[ix, iy, iz] += dt * (dHx_dz * inv_dz_dual[iz] - dHz_dx * inv_dx_dual[ix])
-            Ey[ix, iy, iz] = Dy[ix, iy, iz] * inv_eps_y[ix, iy, iz] * inv_eps0
+            Ey[ix, iy, iz] = Dy[ix, iy, iz] * inv_eps_y[ix, iy, iz]
 
             Dz[ix, iy, iz] += dt * (dHy_dx * inv_dx_dual[ix] - dHx_dy * inv_dy_dual[iy])
-            Ez[ix, iy, iz] = Dz[ix, iy, iz] * inv_eps_z[ix, iy, iz] * inv_eps0
+            Ez[ix, iy, iz] = Dz[ix, iy, iz] * inv_eps_z[ix, iy, iz]
         end
     end
     return nothing
@@ -320,7 +317,7 @@ function MagnetoPhotonic._ka_update_E_3d!(backend::MagnetoPhotonic.CUDABackend,
         cpml.psi_Dzx_lo, cpml.psi_Dzx_hi, cpml.psi_Dzy_lo, cpml.psi_Dzy_hi,
         cpml.x.inv_kappa, cpml.y.inv_kappa, cpml.z.inv_kappa,
         cpml.x.a, cpml.y.a, cpml.z.a, cpml.x.b, cpml.y.b, cpml.z.b,
-        inv_eps_x, inv_eps_y, inv_eps_z, inv(Float64(p.eps0)),
+        inv_eps_x, inv_eps_y, inv_eps_z,
         Float32(dt), inv_d_dual_x, inv_d_dual_y, inv_d_dual_z,
         Int32(Nx), Int32(Ny), Int32(Nz),
         Int32(cpml.Npml_x), Int32(cpml.Npml_y), Int32(cpml.Npml_z))

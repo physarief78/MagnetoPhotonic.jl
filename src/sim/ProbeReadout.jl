@@ -477,6 +477,34 @@ function probe_shot(m::ProbeReadout; state_label::AbstractString="probe",
     )
 end
 
+function mo_consistency_metrics(plus_M, zero_M, minus_M; tolerance::Real=5.0e-3)
+    tra(s) = hasproperty(s, :T_plus_R_plus_A) ? Float64(s.T_plus_R_plus_A) :
+             Float64(s.T + s.R + s.A)
+    plus = tra(plus_M)
+    zero = tra(zero_M)
+    minus = tra(minus_M)
+    all(isfinite, (plus, zero, minus)) ||
+        error("MO consistency totals must be finite: +M=$plus, 0=$zero, -M=$minus")
+    spread = maximum((plus, zero, minus)) - minimum((plus, zero, minus))
+    even_violation = plus - minus
+    theta = Float64[plus_M.theta_faraday_deg, zero_M.theta_faraday_deg,
+                    minus_M.theta_faraday_deg]
+    all(isfinite, theta) || error("MO consistency Faraday angles must be finite")
+    pedestal = 0.5 * (theta[1] + theta[3])
+    tol = Float64(tolerance)
+    return (;
+        TRA_plus_M=plus,
+        TRA_zero_M=zero,
+        TRA_minus_M=minus,
+        even_in_M_violation_plus_minus=even_violation,
+        TRA_spread_plus_zero_minus=spread,
+        theta_faraday_deg_plus_zero_minus=theta,
+        pedestal_avg_vs_zeroM=Float64[pedestal, theta[2]],
+        tolerance=tol,
+        conservative=spread <= tol,
+    )
+end
+
 # Reference contrast sign convention: deltas are INITIAL − SWITCHED.
 function probe_contrast(initial, switched)
     return (;

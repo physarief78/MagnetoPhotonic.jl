@@ -512,6 +512,22 @@ function _write_probe_shot!(h5, group::AbstractString, shot; state=nothing, writ
     end
 end
 
+"""
+    append_probe_shot_h5!(path, label, shot; state=nothing)
+
+Append one completed probe shot below `/probe/<label>` and close the file before
+returning. This provides a durable checkpoint between long sequential probe runs.
+"""
+function MagnetoPhotonic.append_probe_shot_h5!(path::AbstractString, label::AbstractString, shot;
+                                                state=nothing)
+    group = startswith(label, "probe/") ? String(label) : "probe/$(String(label))"
+    HDF5.h5open(path, "r+") do h5
+        haskey(h5, group) && error("probe shot group already exists: /$group")
+        _write_probe_shot!(h5, group, shot; state=state, write_movies=false)
+    end
+    return path
+end
+
 function MagnetoPhotonic.write_goldstd_h5(path::AbstractString, shots; state=nothing,
         reference=getproperty(shots, :reference), initial=getproperty(shots, :initial),
         switched=getproperty(shots, :switched), contrast=MagnetoPhotonic.probe_contrast(initial, switched),

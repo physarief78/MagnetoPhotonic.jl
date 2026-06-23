@@ -20,6 +20,7 @@ load_magnetization(args...; kwargs...) = error("HDF5 support requires the option
 load_production_magnetization(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
 write_production_h5(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
 write_goldstd_h5(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
+append_probe_shot_h5!(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
 production_frame_writer(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
 record_production_frame!(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
 probe_frame_writer(args...; kwargs...) = error("HDF5 support requires the optional HDF5 extension.")
